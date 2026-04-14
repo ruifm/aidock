@@ -110,8 +110,15 @@ engine_run() {
     if [[ "$ENGINE" == "podman" ]]; then
         # Map host UID into the container as root — agent can install packages freely,
         # but files on bind mounts are still owned by the real user on the host.
+        # Requires subordinate UID/GID ranges (/etc/subuid, /etc/subgid).
+        # Falls back to plain keep-id when ranges are unavailable (e.g. CI runners).
         # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
-        userns_flag=(--userns=keep-id:uid=0,gid=0)
+        if grep -q "^$(id -un):" /etc/subuid 2>/dev/null &&
+            grep -q "^$(id -un):" /etc/subgid 2>/dev/null; then
+            userns_flag=(--userns=keep-id:uid=0,gid=0)
+        else
+            userns_flag=(--userns=keep-id)
+        fi
     else
         # Docker: run as host UID with passwordless sudo available (installed in image).
         userns_flag=(--user "$(id -u):$(id -g)")
