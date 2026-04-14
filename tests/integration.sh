@@ -102,9 +102,16 @@ run_in_container() {
 # Run launcher with timeout; separate build output from healthcheck output.
 # Returns only healthcheck output (lines after the last "Building" block).
 run_launcher_check() {
-    local raw
-    raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" check 2>&1)
-    local rc=$?
+    local raw stderr_file rc
+    stderr_file=$(mktemp)
+    raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" check 2>"$stderr_file") && rc=0 || rc=$?
+    local stderr_content
+    stderr_content=$(<"$stderr_file")
+    rm -f "$stderr_file"
+    if [[ -n "$stderr_content" ]]; then
+        echo "    [DEBUG] stderr from ./aidock check:" >&2
+        while IFS= read -r line; do echo "    [DEBUG]   $line"; done <<<"$stderr_content" >&2
+    fi
     # If a build triggered, strip everything up to and including the COMMIT line
     if echo "$raw" | grep -q "^Building "; then
         echo "$raw" | sed -n '/^COMMIT /,$ { /^COMMIT /d; p; }'
@@ -143,6 +150,8 @@ if $RUN_INTEGRATION; then
         pass "checkhealth exits 0 (no failures)"
     else
         fail "checkhealth exits $check_exit" "expected 0"
+        echo "    [DEBUG] raw output from ./aidock check:"
+        while IFS= read -r line; do echo "    [DEBUG]   $line"; done <<<"$check_output"
     fi
 
     fail_count=$(echo "$check_output" | grep -c '✗' || true)
