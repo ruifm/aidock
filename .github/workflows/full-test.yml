@@ -6,7 +6,7 @@ on:
     - cron: "0 6 * * 1" # Weekly on Monday 06:00 UTC
   workflow_dispatch:
   push:
-    branches: [master]
+    branches: [main]
     paths:
       - "aidock"
       - "Containerfile"
