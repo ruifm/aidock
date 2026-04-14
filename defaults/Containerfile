@@ -98,8 +98,8 @@ ENV HOME="/home/${PROJECT_NAME}"
 COPY agents/ /etc/${PROJECT_NAME}/agents/
 
 # ── Entrypoint & healthcheck ──────────────────────────────────────────
-COPY init-home.sh /usr/local/bin/init-home.sh
-COPY checkhealth.sh /usr/local/bin/checkhealth.sh
+COPY --chmod=755 init-home.sh /usr/local/bin/init-home.sh
+COPY --chmod=755 checkhealth.sh /usr/local/bin/checkhealth.sh
 
 ENV PROJECT_NAME="${PROJECT_NAME}"
 
