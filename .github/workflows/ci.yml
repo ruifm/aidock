@@ -27,7 +27,9 @@ jobs:
           sudo chmod +x /usr/local/bin/hadolint
 
       - name: Run checks (fmt + lint + dist + unit tests)
-        run: just check
+        run: |
+          export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
+          just check
 
       - name: Verify dist is fresh
         run: git diff --exit-code aidock
