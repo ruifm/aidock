@@ -1,0 +1,33 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Install tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck jq
+          go install mvdan.cc/sh/v3/cmd/shfmt@latest
+          pip install --user yamllint
+          npm install -g prettier
+          sudo curl -sSL https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 -o /usr/local/bin/hadolint
+          sudo chmod +x /usr/local/bin/hadolint
+
+      - name: Run checks (fmt + lint + dist + unit tests)
+        run: just check
+
+      - name: Verify dist is fresh
+        run: git diff --exit-code aidock

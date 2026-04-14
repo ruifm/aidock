@@ -1,0 +1,106 @@
+# aidock: Agent-agnostic AI dev container
+# Provides LSPs, formatters, toolchains, and AI coding agents (copilot, claude, codex).
+# Build: just build
+# See justfile for convenience recipes
+
+FROM fedora:latest
+
+ARG PROJECT_NAME
+
+# ── Base system tools ────────────────────────────────────────────────
+RUN dnf install -y \
+        # Version control
+        git git-lfs openssh-clients \
+        # Networking
+        curl wget ca-certificates \
+        # Search & navigation
+        jq ripgrep fd-find tree file less \
+        # Archives
+        tar gzip xz unzip p7zip \
+        # Text & data
+        diffutils patch bc man-db man-pages \
+        # Process management
+        which procps-ng findutils \
+        # Runtimes & compilers
+        nodejs npm python3 python3-pip golang \
+        # Build systems
+        make cmake gcc gcc-c++ clang-tools-extra \
+        # Debugging & profiling
+        gdb valgrind strace ltrace \
+        # Document analysis
+        poppler-utils tesseract w3m xmlstarlet pandoc \
+        # Image manipulation
+        ImageMagick \
+        # Database
+        sqlite \
+        # Shell tools
+        ShellCheck just sudo \
+    && dnf clean all
+
+# ── Rust toolchain (installed to /usr/local for all users) ────────────
+ENV RUSTUP_HOME="/usr/local/rustup" \
+    CARGO_HOME="/usr/local/cargo"
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --default-toolchain stable --profile minimal \
+    && . "${CARGO_HOME}/env" \
+    && rustup component add rust-analyzer
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
+
+# ── LSPs and AI agents via npm ───────────────────────────────────────
+RUN npm install -g \
+        typescript \
+        typescript-language-server \
+        @github/copilot \
+        @anthropic-ai/claude-code \
+        @openai/codex \
+        bash-language-server \
+        dockerfile-language-server-nodejs \
+        yaml-language-server \
+        vscode-langservers-extracted \
+        @upstash/context7-mcp \
+        @modelcontextprotocol/server-sequential-thinking \
+        @playwright/mcp \
+        firecrawl-mcp \
+    && npm cache clean --force
+
+# ── Python packages (LSP, formatters, document & image libraries) ──────
+RUN pip install --break-system-packages \
+        basedpyright ruff openpyxl Pillow python-docx
+
+# ── lua-language-server ─────────────────────────────────────────────
+RUN ARCH=$(uname -m) \
+    && if [ "$ARCH" = "x86_64" ]; then LUA_ARCH="linux-x64"; \
+       elif [ "$ARCH" = "aarch64" ]; then LUA_ARCH="linux-arm64"; \
+       else echo "Unsupported arch: $ARCH" && exit 1; fi \
+    && LUA_LS_VERSION=$(curl -s https://api.github.com/repos/LuaLS/lua-language-server/releases/latest | jq -r .tag_name) \
+    && mkdir -p /opt/lua-language-server \
+    && curl -L "https://github.com/LuaLS/lua-language-server/releases/download/${LUA_LS_VERSION}/lua-language-server-${LUA_LS_VERSION}-${LUA_ARCH}.tar.gz" \
+       | tar xz -C /opt/lua-language-server \
+    && ln -s /opt/lua-language-server/bin/lua-language-server /usr/local/bin/lua-language-server
+
+# ── Formatters ────────────────────────────────────────────────────────
+RUN npm install -g prettier
+
+# ── Git identity for container sessions ──────────────────────────────
+RUN printf '[user]\n\tname = AI Coding Agent\n\temail = noreply@github.com\n' \
+    > /etc/gitconfig
+
+# ── Writable home for container user mapping ─────────────────────────
+RUN mkdir -p /home/${PROJECT_NAME} && chmod -R 777 /home/${PROJECT_NAME}
+# Allow entrypoint to add passwd entry for Docker --user (no-op under Podman)
+RUN chmod 666 /etc/passwd /etc/group
+# Passwordless sudo: lets Docker-mapped users install packages at runtime.
+# Under Podman (--userns=keep-id:uid=0), the agent is already root so sudo is unnecessary.
+RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent
+ENV HOME="/home/${PROJECT_NAME}"
+
+# ── Baked-in agent configs (defaults) ────────────────────────────────
+COPY agents/ /etc/${PROJECT_NAME}/agents/
+
+# ── Entrypoint & healthcheck ──────────────────────────────────────────
+COPY init-home.sh /usr/local/bin/init-home.sh
+COPY checkhealth.sh /usr/local/bin/checkhealth.sh
+
+ENV PROJECT_NAME="${PROJECT_NAME}"
+
+ENTRYPOINT ["/usr/local/bin/init-home.sh"]

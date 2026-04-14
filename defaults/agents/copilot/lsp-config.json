@@ -1,0 +1,84 @@
+{
+  "lspServers": {
+    "typescript": {
+      "command": "/usr/local/bin/typescript-language-server",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".ts": "typescript",
+        ".tsx": "typescriptreact",
+        ".js": "javascript",
+        ".jsx": "javascriptreact",
+        ".mjs": "javascript",
+        ".cjs": "javascript"
+      }
+    },
+    "basedpyright": {
+      "command": "/usr/local/bin/basedpyright-langserver",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".py": "python",
+        ".pyi": "python"
+      }
+    },
+    "rust-analyzer": {
+      "command": "rust-analyzer",
+      "args": [],
+      "fileExtensions": {
+        ".rs": "rust"
+      }
+    },
+    "clangd": {
+      "command": "/usr/bin/clangd",
+      "args": ["--background-index"],
+      "fileExtensions": {
+        ".c": "c",
+        ".h": "c",
+        ".cpp": "cpp",
+        ".cxx": "cpp",
+        ".cc": "cpp",
+        ".hpp": "cpp",
+        ".hxx": "cpp"
+      }
+    },
+    "lua": {
+      "command": "/usr/local/bin/lua-language-server",
+      "args": [],
+      "fileExtensions": {
+        ".lua": "lua"
+      }
+    },
+    "bash": {
+      "command": "/usr/local/bin/bash-language-server",
+      "args": ["start"],
+      "fileExtensions": {
+        ".sh": "shellscript",
+        ".bash": "shellscript",
+        ".zsh": "shellscript"
+      }
+    },
+    "docker": {
+      "command": "/usr/local/bin/docker-langserver",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        "Dockerfile": "dockerfile",
+        "Containerfile": "dockerfile"
+      }
+    },
+    "yaml": {
+      "command": "/usr/local/bin/yaml-language-server",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".yaml": "yaml",
+        ".yml": "yaml"
+      }
+    },
+    "json": {
+      "command": "/usr/local/bin/vscode-json-language-server",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".json": "json",
+        ".jsonc": "jsonc"
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "context7": {
+      "command": "context7-mcp",
+      "args": []
+    },
+    "sequential-thinking": {
+      "command": "mcp-server-sequential-thinking",
+      "args": []
+    },
+    "playwright": {
+      "command": "playwright-mcp",
+      "args": []
+    },
+    "firecrawl": {
+      "command": "firecrawl-mcp",
+      "args": []
+    }
+  }
+}

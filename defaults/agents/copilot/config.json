@@ -1,0 +1,7 @@
+{
+  "banner": "never",
+  "model": "claude-opus-4.6",
+  "effortLevel": "max",
+  "experimental": true,
+  "includeCoAuthoredBy": false
+}

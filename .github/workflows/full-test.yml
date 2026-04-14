@@ -1,0 +1,41 @@
+---
+name: Full Test
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Monday 06:00 UTC
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - "aidock"
+      - "Containerfile"
+      - "container/**"
+      - "tests/**"
+      - "justfile"
+
+jobs:
+  integration-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CONTAINER_ENGINE: podman
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install just
+        uses: extractions/setup-just@v2
+
+      - name: Cache Podman layers
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/containers/storage
+          key: podman-${{ runner.os }}-${{ hashFiles('Containerfile', 'container/**') }}
+          restore-keys: |
+            podman-${{ runner.os }}-
+
+      - name: Build image
+        run: just build
+
+      - name: Run all tests
+        run: just test

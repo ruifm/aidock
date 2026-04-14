@@ -1,0 +1,7 @@
+ignored:
+  - DL3007 # Using latest is intentional (rolling release container)
+  - DL3013 # Pin pip versions — intentionally unpinned for latest
+  - DL3016 # Pin npm versions — intentionally unpinned for latest
+  - DL3041 # Pin dnf versions — intentionally unpinned for latest
+  - DL3042 # pip --no-cache-dir — layer caching is fine here
+  - DL4006 # pipefail — using bash explicitly where needed

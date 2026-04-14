@@ -1,0 +1,707 @@
+#!/usr/bin/env bash
+# aidock: Launch an AI coding agent inside a container (podman or docker).
+# DEV SOURCE — do not install directly. Run 'just dist' to build ./aidock.
+# PROJECT_NAME: from env (justfile exports it), else derived from argv[0] basename.
+# This means a symlink named "my-agent" will use "my-agent" as the project name.
+
+set -euo pipefail
+
+: "${PROJECT_NAME:=$(basename "$0")}"
+
+readonly AVAILABLE_AGENTS="copilot claude codex"
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [command] [options] [-- agent args...]
+
+Launch an AI coding agent inside a container.
+
+Commands:
+  run       Launch agent in container (default if omitted)
+  build     Build the container image
+  update    Pull latest base image and rebuild
+  clean     Remove image, config, and dangling layers
+  shell     Open a debug shell in container
+  check     Run container healthcheck
+  info      Show engine, image, and agent info
+  reset     Reset config to defaults (preserves session data)
+  diff      Show config drift between defaults and user config
+
+Options:
+  -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
+  -n, --dry-run      Print container command without executing
+  -h, --help         Show this help
+  -v, --version      Show version
+
+Command-specific options:
+  build:  --no-cache    Force full rebuild (no layer cache)
+  run:    --no-rebuild  Skip auto-rebuild check
+  reset:  --purge       Delete everything (config + session data); asks confirmation
+          --force       Skip confirmation prompt (for scripting)
+
+Agent args:
+  Arguments after -- are passed to the agent binary.
+  Example: ${0##*/} -a claude -- --verbose
+
+Configuration:
+  Agent config+state: \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/<agent>/
+  Build files:        \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/{Containerfile,init-home.sh,...}
+                      All seeded from defaults on first run. Edit to customize.
+  Default agent:      \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/default-agent
+  Container args:     \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/container.conf
+
+Examples:
+  ${0##*/}                           # Run default agent (copilot)
+  ${0##*/} -a claude                 # Run Claude Code
+  ${0##*/} shell                     # Debug shell
+  ${0##*/} check                     # Healthcheck
+  ${0##*/} info                      # Show diagnostic info
+  ${0##*/} reset -a claude           # Re-seed claude config from defaults
+  ${0##*/} reset --purge -a claude    # Delete all claude config + session data
+  ${0##*/} diff                      # Show config drift from defaults
+  ${0##*/} build                     # Build the container image
+  ${0##*/} build --no-cache          # Force full rebuild
+  ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
+  ${0##*/} -- --help                 # Show agent's own help
+EOF
+    exit 0
+}
+
+# ── Engine detection ─────────────────────────────────────────────────
+
+detect_engine() {
+    if [[ -n "${CONTAINER_ENGINE:-}" ]]; then
+        ENGINE="$CONTAINER_ENGINE"
+        if ! command -v "$ENGINE" &>/dev/null; then
+            echo "error: CONTAINER_ENGINE='$ENGINE' not found" >&2
+            exit 1
+        fi
+    elif command -v podman &>/dev/null; then
+        ENGINE="podman"
+    elif command -v docker &>/dev/null; then
+        ENGINE="docker"
+    else
+        echo "error: neither podman nor docker found" >&2
+        exit 1
+    fi
+}
+
+detect_engine
+
+# ── Engine wrapper functions ─────────────────────────────────────────
+
+engine_build() { "$ENGINE" build "$@"; }
+
+engine_image_exists() {
+    if [[ "$ENGINE" == "podman" ]]; then
+        "$ENGINE" image exists "$1" 2>/dev/null
+    else
+        "$ENGINE" image inspect "$1" &>/dev/null
+    fi
+}
+
+# engine_run execs into the container — this function does not return.
+# In dry-run mode, prints the command instead of executing.
+engine_run() {
+    local userns_flag=()
+    if [[ "$ENGINE" == "podman" ]]; then
+        # Map host UID into the container as root — agent can install packages freely,
+        # but files on bind mounts are still owned by the real user on the host.
+        # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
+        userns_flag=(--userns=keep-id:uid=0,gid=0)
+    else
+        # Docker: run as host UID with passwordless sudo available (installed in image).
+        userns_flag=(--user "$(id -u):$(id -g)")
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local cmd
+        cmd=$(printf '%q ' "$ENGINE" run "${userns_flag[@]}" "$@")
+        # Redact secrets (tokens, keys) from dry-run output
+        cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
+        echo "$cmd"
+        exit 0
+    fi
+    exec "$ENGINE" run "${userns_flag[@]}" "$@"
+}
+
+# ── Derived paths ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+readonly IMAGE_NAME="${PROJECT_NAME}"
+readonly CONTAINER_NAME="${PROJECT_NAME}-$$"
+readonly CONTAINER_HOME="/home/${PROJECT_NAME}"
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${PROJECT_NAME}"
+
+# ── Default assets location ──────────────────────────────────────────
+# __DEFAULTS_BEGIN__ (do not edit this marker — used by build-dist.sh)
+# Dev mode: defaults live alongside the source in the repo.
+_DEFAULTS_DIR=""
+get_defaults_dir() {
+    if [[ -n "$_DEFAULTS_DIR" ]]; then return 0; fi
+    local repo_root="${SCRIPT_DIR}/.."
+    if [[ -f "${repo_root}/defaults/Containerfile" ]]; then
+        _DEFAULTS_DIR="${repo_root}/defaults"
+    elif [[ -f "${CONFIG_DIR}/Containerfile" ]]; then
+        _DEFAULTS_DIR="${CONFIG_DIR}"
+    else
+        echo "error: cannot find Containerfile in ${repo_root} or ${CONFIG_DIR}" >&2
+        return 1
+    fi
+}
+# __DEFAULTS_END__
+
+# ── Seed build assets to CONFIG_DIR ──────────────────────────────────
+# The user's copy in CONFIG_DIR is what gets built. get_defaults_dir is the seed source.
+# cp -n ensures user edits are preserved (only copies if file doesn't exist).
+
+get_defaults_dir || exit 1
+BUILD_DIR="${CONFIG_DIR}"
+mkdir -p "${BUILD_DIR}/agents"
+
+cp -arn "${_DEFAULTS_DIR}/." "${BUILD_DIR}/" 2>/dev/null || true
+
+# ── Parse arguments ──────────────────────────────────────────────────
+
+# Read default agent preference (file contains a single agent name)
+DEFAULT_AGENT_FILE="${CONFIG_DIR}/default-agent"
+if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
+    default_agent=$(<"$DEFAULT_AGENT_FILE")
+    default_agent="${default_agent%%[[:space:]]}" # trim trailing whitespace
+    default_agent="${default_agent##[[:space:]]}" # trim leading whitespace
+    if [[ -n "$default_agent" ]]; then
+        AGENT="$default_agent"
+    fi
+else
+    AGENT="copilot"
+fi
+
+RUN_MODE="run"
+AGENT_ARGS=()
+EXTRA_CONTAINER_ARGS=()
+DRY_RUN=false
+BUILD_OVERRIDE=""
+AGENT_EXPLICIT=false
+PURGE=false
+FORCE=false
+
+readonly VERSION="0.1.0"
+
+die() {
+    echo "error: $*" >&2
+    echo "Try '${0##*/} --help' for usage." >&2
+    exit 2
+}
+
+validate_agent() {
+    local name="$1"
+    for a in $AVAILABLE_AGENTS; do
+        [[ "$a" == "$name" ]] && return 0
+    done
+    die "unknown agent '${name}' (available: ${AVAILABLE_AGENTS// /, })"
+}
+
+# ── Subcommand detection ─────────────────────────────────────────────
+# First arg (if not a flag) is treated as a subcommand.
+
+readonly AVAILABLE_COMMANDS="run build update clean shell check info reset diff"
+
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    cmd="$1"
+    valid=false
+    for c in $AVAILABLE_COMMANDS; do
+        [[ "$c" == "$cmd" ]] && valid=true && break
+    done
+    if $valid; then
+        RUN_MODE="$cmd"
+        shift
+    fi
+fi
+
+# ── Parse flags ──────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h | --help)
+            usage
+            ;;
+        -v | --version)
+            echo "${PROJECT_NAME} ${VERSION}"
+            exit 0
+            ;;
+        -a | --agent)
+            [[ $# -ge 2 ]] || die "--agent requires a value"
+            [[ "$2" != -* ]] || die "--agent requires a value, got '$2'"
+            validate_agent "$2"
+            AGENT="$2"
+            AGENT_EXPLICIT=true
+            shift 2
+            ;;
+        -n | --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --no-cache)
+            [[ "$RUN_MODE" == "build" ]] || die "--no-cache is only valid with the 'build' command"
+            BUILD_OVERRIDE="force"
+            shift
+            ;;
+        --no-rebuild)
+            BUILD_OVERRIDE="skip"
+            shift
+            ;;
+        --purge)
+            [[ "$RUN_MODE" == "reset" ]] || die "--purge is only valid with the 'reset' command"
+            PURGE=true
+            shift
+            ;;
+        --force)
+            [[ "$RUN_MODE" == "reset" ]] || die "--force is only valid with the 'reset' command"
+            FORCE=true
+            shift
+            ;;
+        --)
+            shift
+            AGENT_ARGS+=("$@")
+            break
+            ;;
+        -*)
+            die "unknown option '$1'"
+            ;;
+        *)
+            AGENT_ARGS+=("$@")
+            break
+            ;;
+    esac
+done
+
+# Validate agent name (covers default-agent file and --agent flag)
+validate_agent "$AGENT"
+
+# ── Handle reset (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "reset" ]]; then
+    get_defaults_dir || exit 1
+
+    if [[ "$PURGE" == "true" ]]; then
+        # Destructive: rm -rf with confirmation
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            target="${CONFIG_DIR}/${AGENT}"
+            if [[ ! -d "$target" ]]; then
+                echo "Nothing to purge: ${target} does not exist."
+                exit 0
+            fi
+            target_size=$(du -sh "$target" 2>/dev/null | cut -f1)
+            printf "\033[1;31mWARNING: This will permanently delete ALL data for %s:\033[0m\n" "$AGENT"
+            echo "  ${target}/ (${target_size})"
+            echo "  This includes config files, session data, and conversation history."
+        else
+            if [[ ! -d "$CONFIG_DIR" ]]; then
+                echo "Nothing to purge: ${CONFIG_DIR} does not exist."
+                exit 0
+            fi
+            target_size=$(du -sh "$CONFIG_DIR" 2>/dev/null | cut -f1)
+            printf "\033[1;31mWARNING: This will permanently delete ALL aidock data:\033[0m\n"
+            echo "  ${CONFIG_DIR}/ (${target_size})"
+            echo "  This includes build files, all agent configs, sessions, and history."
+        fi
+
+        if [[ "$FORCE" != "true" ]]; then
+            printf "\nContinue? [y/N] "
+            read -r confirm
+            if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+                echo "Aborted."
+                exit 1
+            fi
+        fi
+
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            rm -rf "${CONFIG_DIR}/${AGENT}"
+            echo "Purged ${AGENT} data: deleted ${CONFIG_DIR}/${AGENT}"
+        else
+            rm -rf "$CONFIG_DIR"
+            echo "Purged all data: deleted ${CONFIG_DIR}"
+        fi
+        echo "Defaults will be re-seeded on next run."
+    else
+        # Safe reset: overwrite only known files from defaults
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
+            default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
+            if [[ ! -d "$default_dir" ]]; then
+                die "no defaults found for agent '${AGENT}'"
+            fi
+            mkdir -p "$AGENT_DATA_DIR"
+            for src in "$default_dir"/*; do
+                [[ -f "$src" ]] || continue
+                cp -f "$src" "$AGENT_DATA_DIR/"
+            done
+            echo "Reset ${AGENT} config from defaults (session data preserved)."
+            echo "Config dir: ${AGENT_DATA_DIR}/"
+        else
+            # Re-seed build files from defaults
+            for name in Containerfile init-home.sh checkhealth.sh; do
+                src="${_DEFAULTS_DIR}/${name}"
+                [[ -f "$src" ]] && cp -f "$src" "${CONFIG_DIR}/"
+            done
+            if [[ -d "${_DEFAULTS_DIR}/agents" ]]; then
+                cp -rf "${_DEFAULTS_DIR}/agents" "${CONFIG_DIR}/"
+            fi
+            rm -f "${CONFIG_DIR}/.last-build"
+            echo "Reset build files from defaults (session data preserved)."
+            echo "Config dir: ${CONFIG_DIR}/"
+            echo "Rebuild will be triggered on next run."
+        fi
+    fi
+    exit 0
+fi
+
+# ── Handle diff (early exit) ───────────────────────────────────────
+
+if [[ "$RUN_MODE" == "diff" ]]; then
+    get_defaults_dir || exit 1
+    has_diff=false
+    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+        # Diff agent config only
+        default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
+        user_dir="${CONFIG_DIR}/${AGENT}"
+        if [[ ! -d "$user_dir" ]]; then
+            echo "No user config for ${AGENT} (${user_dir} does not exist)."
+            exit 0
+        fi
+        if diff -ru "$default_dir" "$user_dir" --color=auto; then
+            echo "No drift: ${AGENT} config matches defaults."
+        else
+            has_diff=true
+        fi
+    else
+        # Diff Containerfile and support files
+        for name in Containerfile init-home.sh checkhealth.sh agents; do
+            default="${_DEFAULTS_DIR}/${name}"
+            user="${CONFIG_DIR}/${name}"
+            if [[ ! -e "$user" ]]; then
+                echo "Missing: ${user} (not yet seeded)"
+                continue
+            fi
+            if ! diff -ru "$default" "$user" --color=auto; then
+                has_diff=true
+            fi
+        done
+        if [[ "$has_diff" == "false" ]]; then
+            echo "No drift: build files match defaults."
+        fi
+    fi
+    if [[ "$has_diff" == "true" ]]; then
+        exit 1
+    fi
+    exit 0
+fi
+
+# ── Handle build (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "build" ]]; then
+    build_flags=()
+    if [[ "$BUILD_OVERRIDE" == "force" ]]; then
+        build_flags+=(--no-cache)
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+    else
+        if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
+            echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+        else
+            echo "Building ${IMAGE_NAME} image..."
+        fi
+        engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Handle update (early exit) ─────────────────────────────────────
+
+if [[ "$RUN_MODE" == "update" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+    else
+        echo "Updating ${IMAGE_NAME} image (pull + no-cache rebuild)..."
+        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            --pull --no-cache -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
+        "$ENGINE" image prune -f
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Handle clean (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "clean" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE rmi ${IMAGE_NAME}"
+        [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+    else
+        echo "Cleaning ${IMAGE_NAME}..."
+        "$ENGINE" rmi "${IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${IMAGE_NAME}" || echo "  Image ${IMAGE_NAME} not found (skipped)"
+        if [[ -d "${CONFIG_DIR}" ]]; then
+            rm -rf "${CONFIG_DIR}"
+            echo "  Removed config dir ${CONFIG_DIR}"
+        fi
+        "$ENGINE" image prune -f >/dev/null 2>&1
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Agent definitions ────────────────────────────────────────────────
+
+agent_cmd=()
+agent_config_dir=""
+agent_configs=()
+
+case "$AGENT" in
+    copilot)
+        agent_cmd=(copilot --autopilot --enable-all-github-mcp-tools --yolo --resume)
+        agent_config_dir=".copilot"
+        agent_configs=(config.json lsp-config.json mcp-config.json)
+        ;;
+    claude)
+        agent_cmd=(claude --continue --dangerously-skip-permissions --mcp-config "${CONTAINER_HOME}/.claude/mcp-config.json")
+        agent_config_dir=".claude"
+        agent_configs=(settings.json mcp-config.json)
+        ;;
+    codex)
+        agent_cmd=(codex --yolo)
+        agent_config_dir=".codex"
+        agent_configs=(config.toml)
+        ;;
+    *)
+        # Should not reach here — validate_agent() catches this
+        die "unknown agent '$AGENT'"
+        ;;
+esac
+
+# ── Auto-build if image doesn't exist or source files changed ────────
+
+needs_build=false
+
+if [[ "$DRY_RUN" == "true" && "$BUILD_OVERRIDE" != "force" ]] || [[ "$RUN_MODE" == "info" && "$BUILD_OVERRIDE" != "force" ]]; then
+    # dry-run/info only inspect state; skip build logic entirely
+    needs_build=false
+elif [[ "$BUILD_OVERRIDE" == "force" ]]; then
+    needs_build=true
+elif [[ "$BUILD_OVERRIDE" == "skip" ]]; then
+    if ! engine_image_exists "${IMAGE_NAME}"; then
+        die "image '${IMAGE_NAME}' not found (cannot use --no-rebuild)"
+    fi
+    needs_build=false
+elif ! engine_image_exists "${IMAGE_NAME}"; then
+    needs_build=true
+else
+    last_build_marker="${BUILD_DIR}/.last-build"
+    if [[ -f "$last_build_marker" ]]; then
+        build_epoch=$(stat -c %Y "$last_build_marker")
+    else
+        build_epoch=0
+    fi
+    for src in "${BUILD_DIR}/Containerfile" "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"; do
+        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
+            needs_build=true
+            break
+        fi
+    done
+    # Also rebuild if agent default configs changed
+    for cfg in "${agent_configs[@]}"; do
+        src="${BUILD_DIR}/agents/${AGENT}/${cfg}"
+        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
+            needs_build=true
+            break
+        fi
+    done
+fi
+
+FIRST_RUN=false
+
+if [[ "${needs_build}" == "true" ]]; then
+    if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
+        echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+    else
+        echo "Building ${IMAGE_NAME} image..."
+    fi
+    engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+    touch "${BUILD_DIR}/.last-build"
+    FIRST_RUN=true
+fi
+
+# ── Determine mount root (git toplevel or CWD) ──────────────────────
+
+MOUNT_DIR="$PWD"
+if git_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    MOUNT_DIR="$git_root"
+fi
+
+# ── Agent config+state directory ─────────────────────────────────────
+
+AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
+if [[ ! -d "${AGENT_DATA_DIR}" ]]; then
+    FIRST_RUN=true
+fi
+mkdir -p "${AGENT_DATA_DIR}"
+
+if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
+    echo "First run for ${AGENT}. Config seeded at: ${AGENT_DATA_DIR}/"
+    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+    echo "Edit files to customize. Use 'reset' to restore defaults."
+fi
+
+# ── Assemble mounts ─────────────────────────────────────────────────
+
+mounts=(
+    -v "${AGENT_DATA_DIR}:${CONTAINER_HOME}/${agent_config_dir}/:rw"
+    -v "${MOUNT_DIR}:${MOUNT_DIR}:rw"
+)
+
+env_vars=(
+    -e TERM
+    -e LANG
+    -e DISPLAY
+    -e FIRECRAWL_API_KEY
+
+    -e "HOME=${CONTAINER_HOME}"
+    -e "AGENT=${AGENT}"
+    -e "AGENT_CONFIG_DIR=${agent_config_dir}"
+    -e "PROJECT_NAME=${PROJECT_NAME}"
+    -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${IMAGE_NAME} agent=${AGENT} host_cwd=${PWD}"
+)
+
+# ── Agent-specific auth ─────────────────────────────────────────────
+
+case "$AGENT" in
+    copilot)
+        if [[ -n "${GH_TOKEN:-}" ]]; then
+            env_vars+=(-e "GH_TOKEN=${GH_TOKEN}")
+        elif command -v gh &>/dev/null; then
+            gh_token=$(gh auth token 2>/dev/null || true)
+            if [[ -n "$gh_token" ]]; then
+                env_vars+=(-e "GH_TOKEN=${gh_token}")
+            else
+                echo "warning: 'gh auth token' returned empty, auth may fail" >&2
+            fi
+        else
+            echo "warning: gh CLI not found, cannot pass auth token" >&2
+        fi
+        ;;
+    claude)
+        if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+            env_vars+=(-e ANTHROPIC_API_KEY)
+        else
+            echo "warning: ANTHROPIC_API_KEY not set, auth may fail" >&2
+        fi
+        ;;
+    codex)
+        if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            env_vars+=(-e OPENAI_API_KEY)
+        else
+            echo "warning: OPENAI_API_KEY not set, auth may fail" >&2
+        fi
+        ;;
+esac
+
+# ── Optional copilot-specific mounts ─────────────────────────────────
+
+if [[ "$AGENT" == "copilot" ]]; then
+    if [[ -f "${HOME}/.copilot/copilot-instructions.md" ]]; then
+        mounts+=(-v "${HOME}/.copilot/copilot-instructions.md:${CONTAINER_HOME}/.copilot-instructions-host.md:ro")
+        env_vars+=(-e "COPILOT_INSTRUCTIONS_HOST=${CONTAINER_HOME}/.copilot-instructions-host.md")
+    fi
+
+    if [[ -d "${HOME}/.copilot/agents" ]]; then
+        mounts+=(-v "${HOME}/.copilot/agents/:${CONTAINER_HOME}/.copilot-agents-host/:ro")
+    fi
+fi
+
+# ── Extra engine args from config file ────────────────────────────────
+
+CONTAINER_CONF="${CONFIG_DIR}/container.conf"
+if [[ -f "$CONTAINER_CONF" ]]; then
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Split line into words (handles "flag value" pairs like "-v /a:/b:rw")
+        read -ra args <<<"$line"
+        EXTRA_CONTAINER_ARGS+=("${args[@]}")
+    done <"$CONTAINER_CONF"
+fi
+
+# ── Run ──────────────────────────────────────────────────────────────
+
+if [[ "${RUN_MODE}" == "info" ]]; then
+    echo "Engine:        ${ENGINE} ($("$ENGINE" --version 2>/dev/null | head -1))"
+    if engine_image_exists "${IMAGE_NAME}"; then
+        echo "Image:         ${IMAGE_NAME} (built)"
+    else
+        echo "Image:         ${IMAGE_NAME} (not built)"
+    fi
+    echo "Agent:         ${AGENT}"
+    if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
+        echo "Default agent: $(<"$DEFAULT_AGENT_FILE") (from ${DEFAULT_AGENT_FILE})"
+    else
+        echo "Default agent: copilot (built-in default)"
+    fi
+    echo "Config dir:    ${CONFIG_DIR}/"
+    echo "Agent config:  ${CONFIG_DIR}/${AGENT}/"
+    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+
+    # Show agent versions via a quick container run (if image exists)
+    if engine_image_exists "${IMAGE_NAME}"; then
+        echo ""
+        echo "Agent versions (from image):"
+        for va in $AVAILABLE_AGENTS; do
+            ver=$("$ENGINE" run --rm --entrypoint "$va" "${IMAGE_NAME}" --version 2>/dev/null | head -1 || echo "unknown")
+            echo "  ${va}: ${ver}"
+        done
+    fi
+    exit 0
+fi
+
+if [[ "${RUN_MODE}" == "check" ]]; then
+    engine_run \
+        --rm \
+        --name "${CONTAINER_NAME}" \
+        --hostname "${PROJECT_NAME}" \
+        -w "${PWD}" \
+        "${env_vars[@]}" \
+        "${mounts[@]}" \
+        "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+        "${IMAGE_NAME}" \
+        checkhealth.sh "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
+fi
+
+if [[ "${RUN_MODE}" == "shell" ]]; then
+    engine_run \
+        -it \
+        --rm \
+        --name "${CONTAINER_NAME}" \
+        --hostname "${PROJECT_NAME}" \
+        -w "${PWD}" \
+        "${env_vars[@]}" \
+        "${mounts[@]}" \
+        "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+        --entrypoint /bin/bash \
+        "${IMAGE_NAME}" \
+        "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
+fi
+
+engine_run \
+    -it \
+    --rm \
+    --name "${CONTAINER_NAME}" \
+    --hostname "${PROJECT_NAME}" \
+    -w "${PWD}" \
+    "${env_vars[@]}" \
+    "${mounts[@]}" \
+    "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+    "${IMAGE_NAME}" \
+    "${agent_cmd[@]}" "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"

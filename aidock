@@ -1,0 +1,823 @@
+#!/usr/bin/env bash
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# !! GENERATED FILE — DO NOT EDIT                                   !!
+# !! Edit src/aidock instead, then run: just dist                   !!
+# !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+# aidock: Launch an AI coding agent inside a container (podman or docker).
+# PROJECT_NAME: from env (justfile exports it), else derived from argv[0] basename.
+# This means a symlink named "my-agent" will use "my-agent" as the project name.
+
+set -euo pipefail
+
+: "${PROJECT_NAME:=$(basename "$0")}"
+
+readonly AVAILABLE_AGENTS="copilot claude codex"
+
+usage() {
+    cat <<EOF
+Usage: ${0##*/} [command] [options] [-- agent args...]
+
+Launch an AI coding agent inside a container.
+
+Commands:
+  run       Launch agent in container (default if omitted)
+  build     Build the container image
+  update    Pull latest base image and rebuild
+  clean     Remove image, config, and dangling layers
+  shell     Open a debug shell in container
+  check     Run container healthcheck
+  info      Show engine, image, and agent info
+  reset     Reset config to defaults (preserves session data)
+  diff      Show config drift between defaults and user config
+
+Options:
+  -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
+  -n, --dry-run      Print container command without executing
+  -h, --help         Show this help
+  -v, --version      Show version
+
+Command-specific options:
+  build:  --no-cache    Force full rebuild (no layer cache)
+  run:    --no-rebuild  Skip auto-rebuild check
+  reset:  --purge       Delete everything (config + session data); asks confirmation
+          --force       Skip confirmation prompt (for scripting)
+
+Agent args:
+  Arguments after -- are passed to the agent binary.
+  Example: ${0##*/} -a claude -- --verbose
+
+Configuration:
+  Agent config+state: \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/<agent>/
+  Build files:        \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/{Containerfile,init-home.sh,...}
+                      All seeded from defaults on first run. Edit to customize.
+  Default agent:      \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/default-agent
+  Container args:     \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/container.conf
+
+Examples:
+  ${0##*/}                           # Run default agent (copilot)
+  ${0##*/} -a claude                 # Run Claude Code
+  ${0##*/} shell                     # Debug shell
+  ${0##*/} check                     # Healthcheck
+  ${0##*/} info                      # Show diagnostic info
+  ${0##*/} reset -a claude           # Re-seed claude config from defaults
+  ${0##*/} reset --purge -a claude    # Delete all claude config + session data
+  ${0##*/} diff                      # Show config drift from defaults
+  ${0##*/} build                     # Build the container image
+  ${0##*/} build --no-cache          # Force full rebuild
+  ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
+  ${0##*/} -- --help                 # Show agent's own help
+EOF
+    exit 0
+}
+
+# ── Engine detection ─────────────────────────────────────────────────
+
+detect_engine() {
+    if [[ -n "${CONTAINER_ENGINE:-}" ]]; then
+        ENGINE="$CONTAINER_ENGINE"
+        if ! command -v "$ENGINE" &>/dev/null; then
+            echo "error: CONTAINER_ENGINE='$ENGINE' not found" >&2
+            exit 1
+        fi
+    elif command -v podman &>/dev/null; then
+        ENGINE="podman"
+    elif command -v docker &>/dev/null; then
+        ENGINE="docker"
+    else
+        echo "error: neither podman nor docker found" >&2
+        exit 1
+    fi
+}
+
+detect_engine
+
+# ── Engine wrapper functions ─────────────────────────────────────────
+
+engine_build() { "$ENGINE" build "$@"; }
+
+engine_image_exists() {
+    if [[ "$ENGINE" == "podman" ]]; then
+        "$ENGINE" image exists "$1" 2>/dev/null
+    else
+        "$ENGINE" image inspect "$1" &>/dev/null
+    fi
+}
+
+# engine_run execs into the container — this function does not return.
+# In dry-run mode, prints the command instead of executing.
+engine_run() {
+    local userns_flag=()
+    if [[ "$ENGINE" == "podman" ]]; then
+        # Map host UID into the container as root — agent can install packages freely,
+        # but files on bind mounts are still owned by the real user on the host.
+        # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
+        userns_flag=(--userns=keep-id:uid=0,gid=0)
+    else
+        # Docker: run as host UID with passwordless sudo available (installed in image).
+        userns_flag=(--user "$(id -u):$(id -g)")
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local cmd
+        cmd=$(printf '%q ' "$ENGINE" run "${userns_flag[@]}" "$@")
+        # Redact secrets (tokens, keys) from dry-run output
+        cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
+        echo "$cmd"
+        exit 0
+    fi
+    exec "$ENGINE" run "${userns_flag[@]}" "$@"
+}
+
+# ── Derived paths ────────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+readonly IMAGE_NAME="${PROJECT_NAME}"
+readonly CONTAINER_NAME="${PROJECT_NAME}-$$"
+readonly CONTAINER_HOME="/home/${PROJECT_NAME}"
+readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${PROJECT_NAME}"
+
+# ── Default assets location ──────────────────────────────────────────
+# Dist mode: defaults are embedded in this script as a base64 tarball.
+_DEFAULTS_DIR=""
+_DEFAULTS_CLEANUP_DIR=""
+get_defaults_dir() {
+    if [[ -n "$_DEFAULTS_DIR" ]]; then return 0; fi
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    _DEFAULTS_CLEANUP_DIR="$tmpdir"
+    sed -n '/^__DEFAULTS__$/,$ p' "$0" | tail -n +2 | base64 -d | tar xzf - -C "$tmpdir"
+    _DEFAULTS_DIR="$tmpdir"
+}
+cleanup_defaults_dir() { [[ -n "${_DEFAULTS_CLEANUP_DIR:-}" ]] && rm -rf "$_DEFAULTS_CLEANUP_DIR"; }
+trap cleanup_defaults_dir EXIT
+
+# ── Seed build assets to CONFIG_DIR ──────────────────────────────────
+# The user's copy in CONFIG_DIR is what gets built. get_defaults_dir is the seed source.
+# cp -n ensures user edits are preserved (only copies if file doesn't exist).
+
+get_defaults_dir || exit 1
+BUILD_DIR="${CONFIG_DIR}"
+mkdir -p "${BUILD_DIR}/agents"
+
+cp -arn "${_DEFAULTS_DIR}/." "${BUILD_DIR}/" 2>/dev/null || true
+
+# ── Parse arguments ──────────────────────────────────────────────────
+
+# Read default agent preference (file contains a single agent name)
+DEFAULT_AGENT_FILE="${CONFIG_DIR}/default-agent"
+if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
+    default_agent=$(<"$DEFAULT_AGENT_FILE")
+    default_agent="${default_agent%%[[:space:]]}" # trim trailing whitespace
+    default_agent="${default_agent##[[:space:]]}" # trim leading whitespace
+    if [[ -n "$default_agent" ]]; then
+        AGENT="$default_agent"
+    fi
+else
+    AGENT="copilot"
+fi
+
+RUN_MODE="run"
+AGENT_ARGS=()
+EXTRA_CONTAINER_ARGS=()
+DRY_RUN=false
+BUILD_OVERRIDE=""
+AGENT_EXPLICIT=false
+PURGE=false
+FORCE=false
+
+readonly VERSION="0.1.0"
+
+die() {
+    echo "error: $*" >&2
+    echo "Try '${0##*/} --help' for usage." >&2
+    exit 2
+}
+
+validate_agent() {
+    local name="$1"
+    for a in $AVAILABLE_AGENTS; do
+        [[ "$a" == "$name" ]] && return 0
+    done
+    die "unknown agent '${name}' (available: ${AVAILABLE_AGENTS// /, })"
+}
+
+# ── Subcommand detection ─────────────────────────────────────────────
+# First arg (if not a flag) is treated as a subcommand.
+
+readonly AVAILABLE_COMMANDS="run build update clean shell check info reset diff"
+
+if [[ $# -gt 0 && "$1" != -* ]]; then
+    cmd="$1"
+    valid=false
+    for c in $AVAILABLE_COMMANDS; do
+        [[ "$c" == "$cmd" ]] && valid=true && break
+    done
+    if $valid; then
+        RUN_MODE="$cmd"
+        shift
+    fi
+fi
+
+# ── Parse flags ──────────────────────────────────────────────────────
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -h | --help)
+            usage
+            ;;
+        -v | --version)
+            echo "${PROJECT_NAME} ${VERSION}"
+            exit 0
+            ;;
+        -a | --agent)
+            [[ $# -ge 2 ]] || die "--agent requires a value"
+            [[ "$2" != -* ]] || die "--agent requires a value, got '$2'"
+            validate_agent "$2"
+            AGENT="$2"
+            AGENT_EXPLICIT=true
+            shift 2
+            ;;
+        -n | --dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+        --no-cache)
+            [[ "$RUN_MODE" == "build" ]] || die "--no-cache is only valid with the 'build' command"
+            BUILD_OVERRIDE="force"
+            shift
+            ;;
+        --no-rebuild)
+            BUILD_OVERRIDE="skip"
+            shift
+            ;;
+        --purge)
+            [[ "$RUN_MODE" == "reset" ]] || die "--purge is only valid with the 'reset' command"
+            PURGE=true
+            shift
+            ;;
+        --force)
+            [[ "$RUN_MODE" == "reset" ]] || die "--force is only valid with the 'reset' command"
+            FORCE=true
+            shift
+            ;;
+        --)
+            shift
+            AGENT_ARGS+=("$@")
+            break
+            ;;
+        -*)
+            die "unknown option '$1'"
+            ;;
+        *)
+            AGENT_ARGS+=("$@")
+            break
+            ;;
+    esac
+done
+
+# Validate agent name (covers default-agent file and --agent flag)
+validate_agent "$AGENT"
+
+# ── Handle reset (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "reset" ]]; then
+    get_defaults_dir || exit 1
+
+    if [[ "$PURGE" == "true" ]]; then
+        # Destructive: rm -rf with confirmation
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            target="${CONFIG_DIR}/${AGENT}"
+            if [[ ! -d "$target" ]]; then
+                echo "Nothing to purge: ${target} does not exist."
+                exit 0
+            fi
+            target_size=$(du -sh "$target" 2>/dev/null | cut -f1)
+            printf "\033[1;31mWARNING: This will permanently delete ALL data for %s:\033[0m\n" "$AGENT"
+            echo "  ${target}/ (${target_size})"
+            echo "  This includes config files, session data, and conversation history."
+        else
+            if [[ ! -d "$CONFIG_DIR" ]]; then
+                echo "Nothing to purge: ${CONFIG_DIR} does not exist."
+                exit 0
+            fi
+            target_size=$(du -sh "$CONFIG_DIR" 2>/dev/null | cut -f1)
+            printf "\033[1;31mWARNING: This will permanently delete ALL aidock data:\033[0m\n"
+            echo "  ${CONFIG_DIR}/ (${target_size})"
+            echo "  This includes build files, all agent configs, sessions, and history."
+        fi
+
+        if [[ "$FORCE" != "true" ]]; then
+            printf "\nContinue? [y/N] "
+            read -r confirm
+            if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+                echo "Aborted."
+                exit 1
+            fi
+        fi
+
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            rm -rf "${CONFIG_DIR}/${AGENT}"
+            echo "Purged ${AGENT} data: deleted ${CONFIG_DIR}/${AGENT}"
+        else
+            rm -rf "$CONFIG_DIR"
+            echo "Purged all data: deleted ${CONFIG_DIR}"
+        fi
+        echo "Defaults will be re-seeded on next run."
+    else
+        # Safe reset: overwrite only known files from defaults
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
+            default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
+            if [[ ! -d "$default_dir" ]]; then
+                die "no defaults found for agent '${AGENT}'"
+            fi
+            mkdir -p "$AGENT_DATA_DIR"
+            for src in "$default_dir"/*; do
+                [[ -f "$src" ]] || continue
+                cp -f "$src" "$AGENT_DATA_DIR/"
+            done
+            echo "Reset ${AGENT} config from defaults (session data preserved)."
+            echo "Config dir: ${AGENT_DATA_DIR}/"
+        else
+            # Re-seed build files from defaults
+            for name in Containerfile init-home.sh checkhealth.sh; do
+                src="${_DEFAULTS_DIR}/${name}"
+                [[ -f "$src" ]] && cp -f "$src" "${CONFIG_DIR}/"
+            done
+            if [[ -d "${_DEFAULTS_DIR}/agents" ]]; then
+                cp -rf "${_DEFAULTS_DIR}/agents" "${CONFIG_DIR}/"
+            fi
+            rm -f "${CONFIG_DIR}/.last-build"
+            echo "Reset build files from defaults (session data preserved)."
+            echo "Config dir: ${CONFIG_DIR}/"
+            echo "Rebuild will be triggered on next run."
+        fi
+    fi
+    exit 0
+fi
+
+# ── Handle diff (early exit) ───────────────────────────────────────
+
+if [[ "$RUN_MODE" == "diff" ]]; then
+    get_defaults_dir || exit 1
+    has_diff=false
+    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+        # Diff agent config only
+        default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
+        user_dir="${CONFIG_DIR}/${AGENT}"
+        if [[ ! -d "$user_dir" ]]; then
+            echo "No user config for ${AGENT} (${user_dir} does not exist)."
+            exit 0
+        fi
+        if diff -ru "$default_dir" "$user_dir" --color=auto; then
+            echo "No drift: ${AGENT} config matches defaults."
+        else
+            has_diff=true
+        fi
+    else
+        # Diff Containerfile and support files
+        for name in Containerfile init-home.sh checkhealth.sh agents; do
+            default="${_DEFAULTS_DIR}/${name}"
+            user="${CONFIG_DIR}/${name}"
+            if [[ ! -e "$user" ]]; then
+                echo "Missing: ${user} (not yet seeded)"
+                continue
+            fi
+            if ! diff -ru "$default" "$user" --color=auto; then
+                has_diff=true
+            fi
+        done
+        if [[ "$has_diff" == "false" ]]; then
+            echo "No drift: build files match defaults."
+        fi
+    fi
+    if [[ "$has_diff" == "true" ]]; then
+        exit 1
+    fi
+    exit 0
+fi
+
+# ── Handle build (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "build" ]]; then
+    build_flags=()
+    if [[ "$BUILD_OVERRIDE" == "force" ]]; then
+        build_flags+=(--no-cache)
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+    else
+        if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
+            echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+        else
+            echo "Building ${IMAGE_NAME} image..."
+        fi
+        engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Handle update (early exit) ─────────────────────────────────────
+
+if [[ "$RUN_MODE" == "update" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+    else
+        echo "Updating ${IMAGE_NAME} image (pull + no-cache rebuild)..."
+        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            --pull --no-cache -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
+        "$ENGINE" image prune -f
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Handle clean (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "clean" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE rmi ${IMAGE_NAME}"
+        [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+    else
+        echo "Cleaning ${IMAGE_NAME}..."
+        "$ENGINE" rmi "${IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${IMAGE_NAME}" || echo "  Image ${IMAGE_NAME} not found (skipped)"
+        if [[ -d "${CONFIG_DIR}" ]]; then
+            rm -rf "${CONFIG_DIR}"
+            echo "  Removed config dir ${CONFIG_DIR}"
+        fi
+        "$ENGINE" image prune -f >/dev/null 2>&1
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Agent definitions ────────────────────────────────────────────────
+
+agent_cmd=()
+agent_config_dir=""
+agent_configs=()
+
+case "$AGENT" in
+    copilot)
+        agent_cmd=(copilot --autopilot --enable-all-github-mcp-tools --yolo --resume)
+        agent_config_dir=".copilot"
+        agent_configs=(config.json lsp-config.json mcp-config.json)
+        ;;
+    claude)
+        agent_cmd=(claude --continue --dangerously-skip-permissions --mcp-config "${CONTAINER_HOME}/.claude/mcp-config.json")
+        agent_config_dir=".claude"
+        agent_configs=(settings.json mcp-config.json)
+        ;;
+    codex)
+        agent_cmd=(codex --yolo)
+        agent_config_dir=".codex"
+        agent_configs=(config.toml)
+        ;;
+    *)
+        # Should not reach here — validate_agent() catches this
+        die "unknown agent '$AGENT'"
+        ;;
+esac
+
+# ── Auto-build if image doesn't exist or source files changed ────────
+
+needs_build=false
+
+if [[ "$DRY_RUN" == "true" && "$BUILD_OVERRIDE" != "force" ]] || [[ "$RUN_MODE" == "info" && "$BUILD_OVERRIDE" != "force" ]]; then
+    # dry-run/info only inspect state; skip build logic entirely
+    needs_build=false
+elif [[ "$BUILD_OVERRIDE" == "force" ]]; then
+    needs_build=true
+elif [[ "$BUILD_OVERRIDE" == "skip" ]]; then
+    if ! engine_image_exists "${IMAGE_NAME}"; then
+        die "image '${IMAGE_NAME}' not found (cannot use --no-rebuild)"
+    fi
+    needs_build=false
+elif ! engine_image_exists "${IMAGE_NAME}"; then
+    needs_build=true
+else
+    last_build_marker="${BUILD_DIR}/.last-build"
+    if [[ -f "$last_build_marker" ]]; then
+        build_epoch=$(stat -c %Y "$last_build_marker")
+    else
+        build_epoch=0
+    fi
+    for src in "${BUILD_DIR}/Containerfile" "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"; do
+        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
+            needs_build=true
+            break
+        fi
+    done
+    # Also rebuild if agent default configs changed
+    for cfg in "${agent_configs[@]}"; do
+        src="${BUILD_DIR}/agents/${AGENT}/${cfg}"
+        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
+            needs_build=true
+            break
+        fi
+    done
+fi
+
+FIRST_RUN=false
+
+if [[ "${needs_build}" == "true" ]]; then
+    if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
+        echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+    else
+        echo "Building ${IMAGE_NAME} image..."
+    fi
+    engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+    touch "${BUILD_DIR}/.last-build"
+    FIRST_RUN=true
+fi
+
+# ── Determine mount root (git toplevel or CWD) ──────────────────────
+
+MOUNT_DIR="$PWD"
+if git_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    MOUNT_DIR="$git_root"
+fi
+
+# ── Agent config+state directory ─────────────────────────────────────
+
+AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
+if [[ ! -d "${AGENT_DATA_DIR}" ]]; then
+    FIRST_RUN=true
+fi
+mkdir -p "${AGENT_DATA_DIR}"
+
+if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
+    echo "First run for ${AGENT}. Config seeded at: ${AGENT_DATA_DIR}/"
+    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+    echo "Edit files to customize. Use 'reset' to restore defaults."
+fi
+
+# ── Assemble mounts ─────────────────────────────────────────────────
+
+mounts=(
+    -v "${AGENT_DATA_DIR}:${CONTAINER_HOME}/${agent_config_dir}/:rw"
+    -v "${MOUNT_DIR}:${MOUNT_DIR}:rw"
+)
+
+env_vars=(
+    -e TERM
+    -e LANG
+    -e DISPLAY
+    -e FIRECRAWL_API_KEY
+
+    -e "HOME=${CONTAINER_HOME}"
+    -e "AGENT=${AGENT}"
+    -e "AGENT_CONFIG_DIR=${agent_config_dir}"
+    -e "PROJECT_NAME=${PROJECT_NAME}"
+    -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${IMAGE_NAME} agent=${AGENT} host_cwd=${PWD}"
+)
+
+# ── Agent-specific auth ─────────────────────────────────────────────
+
+case "$AGENT" in
+    copilot)
+        if [[ -n "${GH_TOKEN:-}" ]]; then
+            env_vars+=(-e "GH_TOKEN=${GH_TOKEN}")
+        elif command -v gh &>/dev/null; then
+            gh_token=$(gh auth token 2>/dev/null || true)
+            if [[ -n "$gh_token" ]]; then
+                env_vars+=(-e "GH_TOKEN=${gh_token}")
+            else
+                echo "warning: 'gh auth token' returned empty, auth may fail" >&2
+            fi
+        else
+            echo "warning: gh CLI not found, cannot pass auth token" >&2
+        fi
+        ;;
+    claude)
+        if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+            env_vars+=(-e ANTHROPIC_API_KEY)
+        else
+            echo "warning: ANTHROPIC_API_KEY not set, auth may fail" >&2
+        fi
+        ;;
+    codex)
+        if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+            env_vars+=(-e OPENAI_API_KEY)
+        else
+            echo "warning: OPENAI_API_KEY not set, auth may fail" >&2
+        fi
+        ;;
+esac
+
+# ── Optional copilot-specific mounts ─────────────────────────────────
+
+if [[ "$AGENT" == "copilot" ]]; then
+    if [[ -f "${HOME}/.copilot/copilot-instructions.md" ]]; then
+        mounts+=(-v "${HOME}/.copilot/copilot-instructions.md:${CONTAINER_HOME}/.copilot-instructions-host.md:ro")
+        env_vars+=(-e "COPILOT_INSTRUCTIONS_HOST=${CONTAINER_HOME}/.copilot-instructions-host.md")
+    fi
+
+    if [[ -d "${HOME}/.copilot/agents" ]]; then
+        mounts+=(-v "${HOME}/.copilot/agents/:${CONTAINER_HOME}/.copilot-agents-host/:ro")
+    fi
+fi
+
+# ── Extra engine args from config file ────────────────────────────────
+
+CONTAINER_CONF="${CONFIG_DIR}/container.conf"
+if [[ -f "$CONTAINER_CONF" ]]; then
+    while IFS= read -r line; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Split line into words (handles "flag value" pairs like "-v /a:/b:rw")
+        read -ra args <<<"$line"
+        EXTRA_CONTAINER_ARGS+=("${args[@]}")
+    done <"$CONTAINER_CONF"
+fi
+
+# ── Run ──────────────────────────────────────────────────────────────
+
+if [[ "${RUN_MODE}" == "info" ]]; then
+    echo "Engine:        ${ENGINE} ($("$ENGINE" --version 2>/dev/null | head -1))"
+    if engine_image_exists "${IMAGE_NAME}"; then
+        echo "Image:         ${IMAGE_NAME} (built)"
+    else
+        echo "Image:         ${IMAGE_NAME} (not built)"
+    fi
+    echo "Agent:         ${AGENT}"
+    if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
+        echo "Default agent: $(<"$DEFAULT_AGENT_FILE") (from ${DEFAULT_AGENT_FILE})"
+    else
+        echo "Default agent: copilot (built-in default)"
+    fi
+    echo "Config dir:    ${CONFIG_DIR}/"
+    echo "Agent config:  ${CONFIG_DIR}/${AGENT}/"
+    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+
+    # Show agent versions via a quick container run (if image exists)
+    if engine_image_exists "${IMAGE_NAME}"; then
+        echo ""
+        echo "Agent versions (from image):"
+        for va in $AVAILABLE_AGENTS; do
+            ver=$("$ENGINE" run --rm --entrypoint "$va" "${IMAGE_NAME}" --version 2>/dev/null | head -1 || echo "unknown")
+            echo "  ${va}: ${ver}"
+        done
+    fi
+    exit 0
+fi
+
+if [[ "${RUN_MODE}" == "check" ]]; then
+    engine_run \
+        --rm \
+        --name "${CONTAINER_NAME}" \
+        --hostname "${PROJECT_NAME}" \
+        -w "${PWD}" \
+        "${env_vars[@]}" \
+        "${mounts[@]}" \
+        "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+        "${IMAGE_NAME}" \
+        checkhealth.sh "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
+fi
+
+if [[ "${RUN_MODE}" == "shell" ]]; then
+    engine_run \
+        -it \
+        --rm \
+        --name "${CONTAINER_NAME}" \
+        --hostname "${PROJECT_NAME}" \
+        -w "${PWD}" \
+        "${env_vars[@]}" \
+        "${mounts[@]}" \
+        "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+        --entrypoint /bin/bash \
+        "${IMAGE_NAME}" \
+        "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
+fi
+
+engine_run \
+    -it \
+    --rm \
+    --name "${CONTAINER_NAME}" \
+    --hostname "${PROJECT_NAME}" \
+    -w "${PWD}" \
+    "${env_vars[@]}" \
+    "${mounts[@]}" \
+    "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
+    "${IMAGE_NAME}" \
+    "${agent_cmd[@]}" "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
+
+__DEFAULTS__
+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

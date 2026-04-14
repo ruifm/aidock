@@ -1,0 +1,27 @@
+# Codex CLI default configuration for containerized use
+# See: https://github.com/openai/codex
+
+# Max permissions — bypass approvals and sandbox restrictions
+approval_policy = "never"
+sandbox_permissions = "full-access"
+
+# Store auth credentials in file (no system keychain in containers)
+cli_auth_credentials_store = "file"
+
+# MCP servers
+[mcp_servers.context7]
+command = "context7-mcp"
+args = []
+
+[mcp_servers.sequential-thinking]
+command = "mcp-server-sequential-thinking"
+args = []
+
+[mcp_servers.playwright]
+command = "playwright-mcp"
+args = []
+
+[mcp_servers.firecrawl]
+command = "firecrawl-mcp"
+args = []
+
