@@ -15,7 +15,7 @@ if [[ ! -f "$SRC" ]]; then
 fi
 
 # ── Build the embedded defaults payload ──────────────────────────────
-payload=$(cd "$REPO_ROOT" && tar cf - -C defaults --sort=name --mtime='1970-01-01' --owner=0 --group=0 --numeric-owner . | gzip -n | base64)
+payload=$(cd "$REPO_ROOT" && tar cf - -C defaults --sort=name --mtime='2000-01-01' --owner=0 --group=0 --numeric-owner . | gzip -n | base64)
 
 # ── Assemble the output ──────────────────────────────────────────────
 {

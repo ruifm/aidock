@@ -26,10 +26,22 @@ jobs:
           sudo curl -sSL https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64 -o /usr/local/bin/hadolint
           sudo chmod +x /usr/local/bin/hadolint
 
+      - name: Save committed dist
+        run: cp aidock /tmp/aidock-committed
+
       - name: Run checks (fmt + lint + dist + unit tests)
         run: |
           export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
           just check
 
       - name: Verify dist is fresh
-        run: git diff --exit-code aidock
+        run: |
+          # Script portion (before payload) must be identical
+          sed '/^__DEFAULTS__$/q' /tmp/aidock-committed > /tmp/dist-script-old
+          sed '/^__DEFAULTS__$/q' aidock > /tmp/dist-script-new
+          diff /tmp/dist-script-old /tmp/dist-script-new
+          # Payload contents must match defaults/ (gzip is platform-dependent, so compare extracted)
+          mkdir -p /tmp/payload-old /tmp/payload-new
+          sed -n '/^__DEFAULTS__$/,$ p' /tmp/aidock-committed | tail -n +2 | base64 -d | tar xzf - -C /tmp/payload-old
+          sed -n '/^__DEFAULTS__$/,$ p' aidock | tail -n +2 | base64 -d | tar xzf - -C /tmp/payload-new
+          diff -r /tmp/payload-old /tmp/payload-new
