@@ -2,7 +2,7 @@
 # checkhealth.sh: Verify the container environment is correctly configured.
 # Run via: just test
 # shellcheck disable=SC2015  # A && B || C pattern is intentional for pass/warn reporting
-# shellcheck disable=SC2329  # check_json is invoked dynamically
+# shellcheck disable=SC2329,SC2317  # check_json is invoked dynamically
 
 set -uo pipefail
 
@@ -363,7 +363,6 @@ fi
 section "MCP environment"
 
 [[ -n "${FIRECRAWL_API_KEY:-}" ]] && pass "FIRECRAWL_API_KEY set" || warn "FIRECRAWL_API_KEY not set"
-
 
 # ── Summary ──────────────────────────────────────────────────────────
 

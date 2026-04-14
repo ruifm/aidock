@@ -314,7 +314,7 @@ if [[ "$RUN_MODE" == "reset" ]]; then
         fi
 
         if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-            rm -rf "${CONFIG_DIR}/${AGENT}"
+            rm -rf "${CONFIG_DIR:?}/${AGENT:?}"
             echo "Purged ${AGENT} data: deleted ${CONFIG_DIR}/${AGENT}"
         else
             rm -rf "$CONFIG_DIR"

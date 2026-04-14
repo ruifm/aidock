@@ -40,7 +40,7 @@ fi
 TEST_TMPDIR="$(mktemp -d)"
 export XDG_CONFIG_HOME="${TEST_TMPDIR}"
 CONFIG_DIR="${XDG_CONFIG_HOME}/${PROJECT_NAME}"
-# shellcheck disable=SC2329  # cleanup is invoked by trap
+# shellcheck disable=SC2329,SC2317  # cleanup is invoked by trap
 cleanup() { rm -rf "${TEST_TMPDIR}"; }
 trap cleanup EXIT
 
