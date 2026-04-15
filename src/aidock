@@ -593,6 +593,10 @@ env_vars=(
     -e "AGENT_CONFIG_DIR=${agent_config_dir}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${IMAGE_NAME} agent=${AGENT} host_cwd=${PWD}"
+
+    # Suppress npm update-notifier prompts — in-container updates are
+    # ephemeral, so the prompt is misleading. Use 'aidock update-agents'.
+    -e "NO_UPDATE_NOTIFIER=1"
 )
 
 # ── Agent-specific auth ─────────────────────────────────────────────

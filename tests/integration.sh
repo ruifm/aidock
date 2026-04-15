@@ -531,6 +531,13 @@ if $RUN_UNIT; then
         fail "run --dry-run redacts auth tokens" "got: $(echo "$dry_output" | grep -o 'GH_TOKEN=[^ ]*')"
     fi
 
+    # NO_UPDATE_NOTIFIER is set to suppress ephemeral update prompts
+    if echo "$dry_output" | grep -q 'NO_UPDATE_NOTIFIER=1'; then
+        pass "run sets NO_UPDATE_NOTIFIER=1"
+    else
+        fail "run sets NO_UPDATE_NOTIFIER=1" "not found in dry-run output"
+    fi
+
     # Unknown option is rejected
     excl_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --bogus 2>&1 || true)
     if echo "$excl_output" | grep -q "unknown option"; then
