@@ -46,13 +46,10 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     && rustup component add rust-analyzer
 ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
-# ── LSPs and AI agents via npm ───────────────────────────────────────
+# ── LSPs and MCP servers via npm ─────────────────────────────────────
 RUN npm install -g \
         typescript \
         typescript-language-server \
-        @github/copilot \
-        @anthropic-ai/claude-code \
-        @openai/codex \
         bash-language-server \
         dockerfile-language-server-nodejs \
         yaml-language-server \
@@ -93,6 +90,15 @@ RUN chmod 666 /etc/passwd /etc/group
 # Under Podman (--userns=keep-id:uid=0), the agent is already root so sudo is unnecessary.
 RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent
 ENV HOME="/home/${PROJECT_NAME}"
+
+# ── AI coding agents (separate layer for fast updates) ────────────────
+# Use 'aidock update-agents' to rebuild only this layer.
+ARG AGENT_CACHE_BUST=1
+RUN npm install -g \
+        @github/copilot \
+        @anthropic-ai/claude-code \
+        @openai/codex \
+    && npm cache clean --force
 
 # ── Baked-in agent configs (defaults) ────────────────────────────────
 COPY agents/ /etc/${PROJECT_NAME}/agents/
