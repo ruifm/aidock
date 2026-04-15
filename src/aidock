@@ -17,15 +17,16 @@ Usage: ${0##*/} [command] [options] [-- agent args...]
 Launch an AI coding agent inside a container.
 
 Commands:
-  run       Launch agent in container (default if omitted)
-  build     Build the container image
-  update    Pull latest base image and rebuild
-  clean     Remove image, config, and dangling layers
-  shell     Open a debug shell in container
-  check     Run container healthcheck
-  info      Show engine, image, and agent info
-  reset     Reset config to defaults (preserves session data)
-  diff      Show config drift between defaults and user config
+  run            Launch agent in container (default if omitted)
+  build          Build the container image
+  update         Pull latest base image and rebuild everything
+  update-agents  Rebuild only the AI agent layer (fast)
+  clean          Remove image, config, and dangling layers
+  shell          Open a debug shell in container
+  check          Run container healthcheck
+  info           Show engine, image, and agent info
+  reset          Reset config to defaults (preserves session data)
+  diff           Show config drift between defaults and user config
 
 Options:
   -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
@@ -61,6 +62,7 @@ Examples:
   ${0##*/} diff                      # Show config drift from defaults
   ${0##*/} build                     # Build the container image
   ${0##*/} build --no-cache          # Force full rebuild
+  ${0##*/} update-agents             # Fast-update only AI agents
   ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
   ${0##*/} -- --help                 # Show agent's own help
 EOF
@@ -202,7 +204,7 @@ validate_agent() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update clean shell check info reset diff"
+readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset diff"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -430,6 +432,23 @@ if [[ "$RUN_MODE" == "update" ]]; then
             --pull --no-cache -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
         "$ENGINE" image prune -f
+        echo "Done."
+    fi
+    exit 0
+fi
+
+# ── Handle update-agents (early exit) ─────────────────────────────
+
+if [[ "$RUN_MODE" == "update-agents" ]]; then
+    cache_bust=$(date +%s)
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE build --build-arg PROJECT_NAME=${PROJECT_NAME} --build-arg AGENT_CACHE_BUST=${cache_bust} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+    else
+        echo "Updating AI agents in ${IMAGE_NAME} image..."
+        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            --build-arg "AGENT_CACHE_BUST=${cache_bust}" \
+            -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
         echo "Done."
     fi
     exit 0

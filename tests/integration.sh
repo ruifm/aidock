@@ -612,6 +612,19 @@ if $RUN_UNIT; then
         fail "update --dry-run shows pull + no-cache" "got: $update_dry"
     fi
 
+    # update-agents --dry-run shows AGENT_CACHE_BUST without --pull/--no-cache
+    update_agents_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1)
+    if echo "$update_agents_dry" | grep -q "AGENT_CACHE_BUST"; then
+        pass "update-agents --dry-run shows AGENT_CACHE_BUST"
+    else
+        fail "update-agents --dry-run shows AGENT_CACHE_BUST" "got: $update_agents_dry"
+    fi
+    if echo "$update_agents_dry" | grep -q "\-\-pull\|\-\-no-cache"; then
+        fail "update-agents should not use --pull or --no-cache"
+    else
+        pass "update-agents does not use --pull or --no-cache"
+    fi
+
     # --clean --dry-run shows what would be cleaned
     clean_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" clean --dry-run 2>&1)
     if echo "$clean_dry" | grep -q "\[dry-run\].*rmi"; then
