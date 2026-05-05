@@ -496,7 +496,9 @@ session_image_name() {
 emit_containerfile() {
     cat <<'__AIDOCK_CONTAINERFILE__'
 # aidock: Agent-agnostic AI dev container
-# Provides LSPs, formatters, toolchains, and AI coding agents (copilot, claude, codex).
+# Provides formatters, toolchains, and AI coding agents (copilot, claude, codex).
+# LSPs and MCP servers are intentionally not pre-installed; agents install them
+# on demand and the per-CWD commit-on-exit persists those installs.
 # Build: just build
 # See justfile for convenience recipes
 
@@ -526,27 +528,19 @@ RUN dnf install -y \
         ShellCheck just sudo \
     && dnf clean all
 
-# ── LSPs, MCP servers, AI agents, and formatters via npm ─────────────
+# ── AI agents and formatters via npm ─────────────────────────────────
+# LSPs and MCP servers are intentionally NOT pre-installed. Agents
+# install per-project tooling on demand and the per-CWD commit-on-exit
+# persists those installs across runs.
 RUN npm install -g \
-        typescript \
-        typescript-language-server \
-        bash-language-server \
-        dockerfile-language-server-nodejs \
-        yaml-language-server \
-        vscode-langservers-extracted \
-        @upstash/context7-mcp \
-        @modelcontextprotocol/server-sequential-thinking \
-        @playwright/mcp \
-        firecrawl-mcp \
         prettier \
         @github/copilot \
         @anthropic-ai/claude-code \
         @openai/codex \
     && npm cache clean --force
 
-# ── Python packages (LSP and formatters) ─────────────────────────────
-RUN pip install --break-system-packages \
-        basedpyright ruff
+# ── Python formatters ────────────────────────────────────────────────
+RUN pip install --break-system-packages ruff
 
 # ── Git identity for container sessions ──────────────────────────────
 RUN printf '[user]\n\tname = AI Coding Agent\n\temail = noreply@github.com\n' \
@@ -1256,7 +1250,7 @@ case "$AGENT" in
         agent_config_dir=".copilot"
         ;;
     claude)
-        agent_cmd=(claude --continue --dangerously-skip-permissions --mcp-config "${CONTAINER_HOME}/.claude/mcp-config.json")
+        agent_cmd=(claude --continue --dangerously-skip-permissions)
         agent_config_dir=".claude"
         ;;
     codex)
@@ -1339,7 +1333,6 @@ env_vars=(
     -e TERM
     -e LANG
     -e DISPLAY
-    -e FIRECRAWL_API_KEY
 
     -e "HOME=${CONTAINER_HOME}"
     -e "AGENT=${AGENT}"
