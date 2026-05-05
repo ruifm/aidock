@@ -111,13 +111,49 @@ aidock check                      # run container healthcheck
 
 ### Agent authentication
 
-| Agent | Auth |
-|-------|------|
-| Copilot | `GH_TOKEN` env var, or auto-detected from `gh auth token` |
-| Claude | `ANTHROPIC_API_KEY` env var |
-| Codex | `OPENAI_API_KEY` env var |
+aidock probes your host for each agent's auth and uses the result to decide which agents are usable. An agent is considered configured when **any one** of these is true:
 
-Tokens are forwarded into the container but never written to disk or logged. Long-lived auth state (e.g. Copilot's `apps.json` / `hosts.json`) is read from your host config via a per-agent allowlist; agent session history and chat data live inside the per-project committed image.
+| Agent | Configured if any of |
+|-------|---------------------|
+| Copilot | `GH_TOKEN` set, or `gh auth token` succeeds, or `~/.config/github-copilot/hosts.json` exists |
+| Claude | `ANTHROPIC_API_KEY` set, or `~/.claude/.credentials.json` exists |
+| Codex | `OPENAI_API_KEY` set, or `~/.codex/auth.json` exists |
+
+Setup hints if you're missing one:
+
+| Agent | Setup |
+|-------|-------|
+| Copilot | `gh auth login` (then enable Copilot), or set `GH_TOKEN` |
+| Claude | Set `ANTHROPIC_API_KEY`, or run `claude /login` once on the host |
+| Codex | Set `OPENAI_API_KEY`, or run `codex login` once on the host |
+
+Tokens and credential files are forwarded into the container via a per-agent allowlist (auth/account state only). Agent session history and chat data live inside the per-project committed image, so different projects never see each other's sessions.
+
+#### Picking an agent
+
+When you run `aidock` without `-a` and without a `default-agent` file, the launcher picks one based on what's configured on your host:
+
+- **0 configured** — die and print the setup hint for all three agents.
+- **1 configured** — autoselect it and log `[info] autoselected: <agent>`.
+- **2+ configured** — show a numbered TTY picker. Unconfigured agents are listed in a separate non-selectable section with their setup hint. With no TTY (e.g. piped input) the launcher dies and points you at `-a` or `default-agent`.
+
+Explicit selection (`-a claude` or `default-agent` file) is a hard contract: if that agent isn't configured on the host, `aidock run` dies with the agent's setup hint. `aidock shell` only warns, since shell mode is a debug escape hatch.
+
+`aidock update-agents` filters the same way — it only reinstalls agents that are configured on your host. The base image still ships all three agents, so adding auth for a new one later just works on the next run.
+
+#### Recommended rule-file snippet
+
+aidock containers run as root with full permissions and only your project bind-mounted from the host. Tell your agent it can act freely inside the container — it removes a lot of "may I run this?" friction. Drop something like the following into your agent's instruction file:
+
+> You are running with full root permissions inside a Fedora container with only the current project bind-mounted from the host. Anything you install (`dnf install`, `pip install`, `npm install -g`, etc.) persists across runs because the container is committed on exit. The container is the sandbox — do not ask permission to run destructive commands inside it. If you need anything from the host (config outside the project, global git changes, access to other repos), tell me explicitly so I can do it from the host.
+
+Per-agent file conventions:
+
+| Agent | Repo-level | User-level |
+|-------|-----------|-----------|
+| Copilot | `.github/copilot-instructions.md` | (memory / settings UI) |
+| Claude | `CLAUDE.md` | `~/.claude/CLAUDE.md` |
+| Codex | `AGENTS.md` | `~/.codex/AGENTS.md` |
 
 ## What's inside
 
@@ -189,11 +225,13 @@ Add persistent Podman/Docker flags to `~/.config/aidock/container.conf` (one per
 
 ### Default agent
 
-Write a name to `~/.config/aidock/default-agent` to change the default from `copilot`:
+If you almost always use the same agent, write its name to `~/.config/aidock/default-agent` to skip the picker:
 
 ```bash
 echo claude > ~/.config/aidock/default-agent
 ```
+
+Without this file, the agent is chosen by the picker described under [Agent authentication](#agent-authentication).
 
 ## How it works
 
