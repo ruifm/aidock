@@ -863,6 +863,38 @@ if [[ "$AGENT" == "copilot" ]]; then
     fi
 fi
 
+# ── Host config bind-mount allowlist (per-agent) ─────────────────────
+# Mount allowlisted host auth/account files so login state lives on the
+# host and is shared across CWDs. Agent data (chat history, sessions,
+# cache) stays inside the per-CWD committed image.
+
+add_host_config_mount() {
+    local host_path="$1" container_path="$2"
+    if [[ -e "$host_path" ]]; then
+        mounts+=(-v "${host_path}:${container_path}:rw")
+    fi
+}
+
+case "$AGENT" in
+    copilot)
+        for f in apps.json versions.json hosts.json; do
+            add_host_config_mount \
+                "${HOME}/.config/github-copilot/${f}" \
+                "${CONTAINER_HOME}/.config/github-copilot/${f}"
+        done
+        ;;
+    claude)
+        add_host_config_mount \
+            "${HOME}/.claude/.credentials.json" \
+            "${CONTAINER_HOME}/.claude/.credentials.json"
+        ;;
+    codex)
+        add_host_config_mount \
+            "${HOME}/.codex/auth.json" \
+            "${CONTAINER_HOME}/.codex/auth.json"
+        ;;
+esac
+
 # ── Extra engine args from config file ────────────────────────────────
 
 CONTAINER_CONF="${CONFIG_DIR}/container.conf"

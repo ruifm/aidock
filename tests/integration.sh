@@ -877,6 +877,53 @@ EOF
     fi
     rm -rf "$fake_base"
 
+    # ── Host config bind-mount allowlist ─────────────────────────────────
+
+    section "Host config bind-mount allowlist"
+
+    fake_home="${TEST_TMPDIR}/fake-home-${RANDOM}"
+    mkdir -p "${fake_home}/.config/github-copilot"
+    mkdir -p "${fake_home}/.claude"
+    mkdir -p "${fake_home}/.codex"
+    # Copilot: create apps.json and hosts.json, but NOT versions.json.
+    echo '{}' >"${fake_home}/.config/github-copilot/apps.json"
+    echo '{}' >"${fake_home}/.config/github-copilot/hosts.json"
+    echo '{}' >"${fake_home}/.claude/.credentials.json"
+    echo '{}' >"${fake_home}/.codex/auth.json"
+
+    cop_dry=$(HOME="$fake_home" timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent copilot 2>&1 || true)
+    if echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/apps.json:${CONTAINER_HOME}/.config/github-copilot/apps.json:rw" &&
+        echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/hosts.json:${CONTAINER_HOME}/.config/github-copilot/hosts.json:rw" &&
+        ! echo "$cop_dry" | grep -q "versions.json"; then
+        pass "copilot mounts only allowlisted host config files that exist"
+    else
+        fail "copilot mounts only allowlisted host config files that exist" "got: $cop_dry"
+    fi
+
+    cla_dry=$(HOME="$fake_home" ANTHROPIC_API_KEY=fake timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent claude 2>&1 || true)
+    if echo "$cla_dry" | grep -q "${fake_home}/.claude/.credentials.json:${CONTAINER_HOME}/.claude/.credentials.json:rw"; then
+        pass "claude mounts host credentials when present"
+    else
+        fail "claude mounts host credentials when present" "got: $cla_dry"
+    fi
+
+    cod_dry=$(HOME="$fake_home" OPENAI_API_KEY=fake timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent codex 2>&1 || true)
+    if echo "$cod_dry" | grep -q "${fake_home}/.codex/auth.json:${CONTAINER_HOME}/.codex/auth.json:rw"; then
+        pass "codex mounts host auth.json when present"
+    else
+        fail "codex mounts host auth.json when present" "got: $cod_dry"
+    fi
+
+    empty_home="${TEST_TMPDIR}/empty-home-${RANDOM}"
+    mkdir -p "$empty_home"
+    none_dry=$(HOME="$empty_home" timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent copilot 2>&1 || true)
+    if ! echo "$none_dry" | grep -q "github-copilot.*:rw"; then
+        pass "no host config mounts when files absent"
+    else
+        fail "no host config mounts when files absent" "got: $none_dry"
+    fi
+    rm -rf "$fake_home" "$empty_home"
+
     # ── First-run message ────────────────────────────────────────────────
 
     section "First-run message"
