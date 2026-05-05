@@ -2,19 +2,19 @@
 
 ## Project overview
 
-aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Code, Codex) inside per-CWD stateful Podman/Docker containers. It is a single self-contained Bash script with default Containerfile/init-home/checkhealth contents inlined as heredocs.
+aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Code, Codex) inside per-CWD stateful Podman/Docker containers. It is a single self-contained Bash script: the default `Containerfile` is inlined as a heredoc, while `init-home` and `checkhealth` are hidden subcommands (`aidock __init-home`, `aidock __checkhealth`) baked into the image as the entrypoint and healthcheck.
 
 ## Repository layout
 
 - `aidock` — the launcher script. This is the file users install and run; there is no separate dist/build step.
 - `tests/integration.sh` — unit and integration test suite.
 - `justfile` — task runner recipes and single source of truth for the project name.
-- `~/.config/aidock/` (per-user, not in repo) — `Containerfile`, `init-home.sh`, `checkhealth.sh`, `aidock.conf`, seeded on first run from inline heredocs in `aidock`. User edits there are preserved.
+- `~/.config/aidock/` (per-user, not in repo) — `Containerfile`, `aidock.conf`, seeded on first run from inline defaults in `aidock`. User edits there are preserved.
 
 ## Development rules
 
 - Edit `aidock` directly. There is no generated copy.
-- The default Containerfile / init-home.sh / checkhealth.sh live inline in `aidock` as quoted heredocs (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`). Use `aidock --emit-default <name>` to print one out (used by `just lint` for hadolint).
+- The default Containerfile lives inline in `aidock` as a quoted heredoc (`emit_containerfile`). Use `aidock --emit-default Containerfile` to print it out (used by `just lint` for hadolint). `init-home` and `checkhealth` logic lives in regular Bash functions exposed as the hidden `__init-home` / `__checkhealth` subcommands so they get linted and tested like the rest of the launcher.
 - Run `just check` before committing (formats, lints, runs unit tests).
 - Use `just fmt` to format (shfmt for Bash, prettier for JSON/YAML).
 - Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
@@ -34,6 +34,7 @@ aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Co
 - **User namespace mapping**: Podman uses `--userns=keep-id`; Docker uses `--user` with dynamic passwd entry.
 - **CWD mirroring**: the project is mounted at the same absolute path inside the container.
 - **Agent abstraction**: a case statement in `aidock` maps agent names to their CLI commands, config dirs, and auth mechanisms.
+- **Shared agents volume**: agent CLIs (`copilot`, `claude`, `codex`) are not baked into the base image. They live in a named volume `${PROJECT_NAME}-agents` mounted at `/opt/aidock/agents`; the image sets `NPM_CONFIG_PREFIX=/opt/aidock/agents` and prepends `/opt/aidock/agents/bin` to `PATH`. Build seeds the volume; `update-agents` operates on the volume only (global, fast). Concurrency guarded by `${SESSION_DIR}/agents-volume.lock`.
 
 ## Testing
 

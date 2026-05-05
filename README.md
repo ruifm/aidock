@@ -75,7 +75,7 @@ aidock [command] [options] [-- agent-args...]
 | `run` | Launch agent in container (default if omitted) |
 | `build` | Build the base container image |
 | `update` | Pull latest base image and rebuild |
-| `update-agents` | Re-install AI agents inside the current project's session image |
+| `update-agents` | Re-install AI agents in the shared agents volume (global, affects every project) |
 | `clean` | Remove images and config |
 | `shell` | Open a debug shell in the container |
 | `check` | Run the container healthcheck |
@@ -100,7 +100,7 @@ aidock -a claude -- --verbose     # verbose mode for Claude
 aidock build                      # build base image
 aidock build --no-cache           # force full rebuild
 aidock update                     # pull latest base + rebuild
-aidock update-agents              # bump agent versions inside this project's image
+aidock update-agents              # bump agent versions globally (shared across all projects)
 
 # Project sessions
 aidock list-sessions              # which projects have committed state
@@ -144,7 +144,7 @@ When you run `aidock` without `-a` and without a `default-agent` file, the launc
 
 Explicit selection (`-a claude` or `default-agent` file) is a hard contract: if that agent isn't configured on the host, `aidock run` dies with the agent's setup hint. `aidock shell` only warns, since shell mode is a debug escape hatch.
 
-`aidock update-agents` filters the same way — it only reinstalls agents that are configured on your host. The base image still ships all three agents, so adding auth for a new one later just works on the next run.
+`aidock update-agents` filters the same way — it only installs agents that are configured on your host. Agents live in a shared named volume (`aidock-agents`) mounted at `/opt/aidock/agents`, so updates are global and instant across every project. Adding auth for a new agent later seeds it on the next build.
 
 #### Recommended rule-file snippet
 
@@ -170,7 +170,7 @@ The base image is Fedora-based and intentionally lean:
 | Formatters / linters | prettier, ruff, ShellCheck |
 | Search & nav | ripgrep, fd, jq, tree, less |
 | Misc | git, curl, wget, diffutils, patch, sudo, just, sqlite |
-| AI agents | Copilot CLI, Claude Code, Codex |
+| AI agents | Copilot CLI, Claude Code, Codex (installed in the shared `aidock-agents` volume, not the base image) |
 
 Heavier tooling (Rust, Go, gcc/g++, debuggers, document/media tooling) is **not** in the base image. If your project needs it, ask the agent to install it; the per-project commit will persist the install for next time.
 
@@ -265,8 +265,11 @@ aidock is a Bash script that orchestrates Podman or Docker. Each session:
 |-----------|---------------|------|
 | Git repository root (or `$PWD`) | Same absolute path | read-write |
 | Per-agent allowlisted host config files (e.g. `~/.config/github-copilot/apps.json`) | Same path inside container | read-write |
+| `aidock-agents` named volume (shared) | `/opt/aidock/agents` | read-write |
 
 Agent session history, chat data, and downloaded models live **inside** the per-project committed image, not bind-mounted from the host. That's why two project sessions don't see each other's chat picker.
+
+The agent CLIs themselves live in the `aidock-agents` named volume, mounted at `/opt/aidock/agents`. `npm install -g` inside the container writes there because `NPM_CONFIG_PREFIX=/opt/aidock/agents` is baked into the image. One `aidock update-agents` updates every project at once.
 
 ### Engine auto-detection
 
@@ -288,7 +291,7 @@ A per-hash `flock` under `~/.local/share/aidock/sessions/<hash>.lock` serializes
 ## Uninstall
 
 ```bash
-aidock clean              # remove all images (base + every project session)
+aidock clean              # remove all images (base + every project session) and the agents volume
 rm -rf ~/.config/aidock ~/.local/share/aidock
 rm ~/.local/bin/aidock
 ```
