@@ -1335,6 +1335,8 @@ env_vars=(
     -e TERM
     -e LANG
     -e DISPLAY
+    -e COLORTERM
+    -e EDITOR
 
     -e "HOME=${CONTAINER_HOME}"
     -e "AGENT=${AGENT}"
@@ -1342,6 +1344,13 @@ env_vars=(
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${ACTIVE_IMAGE} agent=${AGENT} host_cwd=${PWD}"
 )
+
+# Allocate a TTY only when stdin & stdout are both terminals; this lets pipes
+# and CI runs work without spurious "input device is not a TTY" errors.
+tty_flags=()
+if [[ -t 0 && -t 1 ]]; then
+    tty_flags=(-it)
+fi
 
 # ── Agent-specific auth ─────────────────────────────────────────────
 
@@ -1490,7 +1499,7 @@ fi
 
 if [[ "${RUN_MODE}" == "shell" ]]; then
     engine_run_committing \
-        -it \
+        "${tty_flags[@]}" \
         --name "${CONTAINER_NAME}" \
         --hostname "${PROJECT_NAME}" \
         -w "${PWD}" \
@@ -1505,7 +1514,7 @@ fi
 # ── Launch agent ────────────────────────────────────────────────────
 
 engine_run_committing \
-    -it \
+    "${tty_flags[@]}" \
     --name "${CONTAINER_NAME}" \
     --hostname "${PROJECT_NAME}" \
     -w "${PWD}" \
