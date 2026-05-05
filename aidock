@@ -377,6 +377,32 @@ engine_image_size() {
     "$ENGINE" images --format '{{.Size}}' "$tag" 2>/dev/null | head -n1
 }
 
+# ── Shared agents volume helpers ─────────────────────────────────────
+# The agents volume holds the npm-installed agent CLIs (copilot/claude/
+# codex) and is mounted at /opt/aidock/agents on every container run.
+# It is populated at build time (cmd_build → _seed_agents_volume) and
+# refreshed by `update-agents` so updates propagate instantly to all
+# CWDs/sessions without any per-session rebuild.
+
+engine_volume_exists() {
+    "$ENGINE" volume inspect "$1" &>/dev/null
+}
+
+engine_volume_create() {
+    if ! engine_volume_exists "$1"; then
+        "$ENGINE" volume create "$1" >/dev/null
+    fi
+}
+
+# Best-effort human-readable size for a named volume (e.g. "47M"); empty
+# string when the volume is missing or its mountpoint is unreadable.
+engine_volume_size() {
+    local mp
+    mp=$("$ENGINE" volume inspect --format '{{.Mountpoint}}' "$1" 2>/dev/null) || return 0
+    [[ -d "$mp" && -r "$mp" ]] || return 0
+    du -sh "$mp" 2>/dev/null | cut -f1
+}
+
 # engine_run execs into the container — this function does not return.
 # In dry-run mode, prints the command instead of executing.
 # Used for ephemeral commands (check) that must not commit.
@@ -460,6 +486,84 @@ _acquire_session_lock() {
     fi
 }
 
+# Acquire an exclusive flock on ${SESSION_DIR}/agents-volume.lock so
+# concurrent seeds / update-agents on different CWDs don't race against
+# the shared agents volume. Uses fd 8 to avoid clashing with the per-CWD
+# session lock on fd 9.
+_acquire_agents_volume_lock() {
+    if ! command -v flock >/dev/null 2>&1; then
+        return 0
+    fi
+    mkdir -p "$SESSION_DIR"
+    local lockfile="${SESSION_DIR}/agents-volume.lock"
+    exec 8>"$lockfile"
+    if ! flock -n 8; then
+        {
+            echo "error: another aidock build/update-agents is touching the shared agents volume"
+            echo "  lock: ${lockfile}"
+            echo "  wait for it to finish and try again"
+        } >&2
+        exit 2
+    fi
+}
+
+# Map an agent name to its npm package (matches update-agents's table).
+_agent_npm_pkg() {
+    case "$1" in
+        copilot) echo "@github/copilot" ;;
+        claude) echo "@anthropic-ai/claude-code" ;;
+        codex) echo "@openai/codex" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Install (or refresh) the configured agents into the shared agents
+# volume. Called from cmd_build and from the auto-build path so the
+# volume is always populated for the agents the user actually has auth
+# for. No-op (with info notice) when no agents are configured: the
+# picker will already have errored out before reaching a launch path,
+# but `aidock build` runs without picker-gating, so we tolerate empty.
+_seed_agents_volume() {
+    local pkgs=()
+    local a
+    while IFS= read -r a; do
+        [[ -n "$a" ]] || continue
+        pkgs+=("$(_agent_npm_pkg "$a")")
+    done < <(list_configured_agents)
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ ${#pkgs[@]} -eq 0 ]]; then
+            echo "[dry-run] would skip agents-volume seed (no configured agents)"
+        else
+            echo "[dry-run] Would create volume: $ENGINE volume create ${AGENTS_VOLUME}"
+            echo "[dry-run] Would seed ${AGENTS_VOLUME}: npm install -g ${pkgs[*]}"
+        fi
+        return 0
+    fi
+
+    if [[ ${#pkgs[@]} -eq 0 ]]; then
+        echo "[info] no agents configured on host; skipping agents-volume seed" >&2
+        return 0
+    fi
+
+    engine_volume_create "$AGENTS_VOLUME"
+    _acquire_agents_volume_lock
+
+    echo "Seeding ${AGENTS_VOLUME} with: ${pkgs[*]}"
+    local userns_flag=()
+    if [[ "$ENGINE" == "podman" ]]; then
+        # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
+        userns_flag=(--userns=keep-id:uid=0,gid=0)
+    else
+        userns_flag=(--user "$(id -u):$(id -g)")
+    fi
+    "$ENGINE" run --rm "${userns_flag[@]}" \
+        -v "${AGENTS_VOLUME}:/opt/aidock/agents:z" \
+        --entrypoint sh \
+        "${BASE_IMAGE_NAME}" \
+        -c "npm install -g ${pkgs[*]} && npm cache clean --force"
+}
+
 # Inspect $1 (container name) for filesystem changes, and depending on
 # $COMMIT_POLICY commit them to $SESSION_IMAGE_NAME or discard them.
 # Always rm's the container at the end. $2 is the container exit code,
@@ -529,6 +633,7 @@ _prompt_commit() {
 
 # ── Derived paths ────────────────────────────────────────────────────
 readonly BASE_IMAGE_NAME="${PROJECT_NAME}-base"
+readonly AGENTS_VOLUME="${PROJECT_NAME}-agents"
 readonly CONTAINER_NAME="${PROJECT_NAME}-$$"
 readonly CONTAINER_HOME="/home/${PROJECT_NAME}"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${PROJECT_NAME}"
@@ -590,16 +695,23 @@ RUN dnf install -y \
         ShellCheck just sudo \
     && dnf clean all
 
-# ── AI agents and formatters via npm ─────────────────────────────────
+# ── Formatters via npm ───────────────────────────────────────────────
 # LSPs and MCP servers are intentionally NOT pre-installed. Agents
 # install per-project tooling on demand and the per-CWD commit-on-exit
 # persists those installs across runs.
-RUN npm install -g \
-        prettier \
-        @github/copilot \
-        @anthropic-ai/claude-code \
-        @openai/codex \
-    && npm cache clean --force
+RUN npm install -g prettier && npm cache clean --force
+
+# ── Shared agents volume mount point ─────────────────────────────────
+# AI agent CLIs (copilot/claude/codex) are NOT baked into the base image.
+# They are installed into a shared named volume mounted at /opt/aidock/agents
+# at build time, so `update-agents` is global and instant across all sessions.
+# /opt/aidock/agents/bin is first in PATH; volume binaries shadow image-level
+# fallbacks. mode 0777 lets both Podman (root in container) and Docker
+# (--user uid:gid) write into the volume.
+RUN mkdir -p /opt/aidock/agents/bin /opt/aidock/agents/lib \
+    && chmod -R 0777 /opt/aidock/agents
+ENV NPM_CONFIG_PREFIX="/opt/aidock/agents"
+ENV PATH="/opt/aidock/agents/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # ── Python formatters ────────────────────────────────────────────────
 RUN pip install --break-system-packages ruff
@@ -1244,11 +1356,13 @@ if [[ "$RUN_MODE" == "build" ]]; then
     fi
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+        _seed_agents_volume
     else
         echo "Building ${BASE_IMAGE_NAME} image..."
         engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
             -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
+        _seed_agents_volume
         echo "Done."
     fi
     exit 0
@@ -1260,12 +1374,14 @@ if [[ "$RUN_MODE" == "update" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
         echo "[dry-run] Would run: $ENGINE image prune -f"
+        _seed_agents_volume
     else
         echo "Updating ${BASE_IMAGE_NAME} image (pull + no-cache rebuild)..."
         engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
             --pull --no-cache -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
         "$ENGINE" image prune -f
+        _seed_agents_volume
         echo "Done."
     fi
     exit 0
@@ -1455,6 +1571,7 @@ if [[ "${needs_build}" == "true" ]]; then
     echo "Building ${BASE_IMAGE_NAME} image..."
     engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
     touch "${BUILD_DIR}/.last-build"
+    _seed_agents_volume
     FIRST_RUN=true
 fi
 
@@ -1475,6 +1592,7 @@ fi
 
 mounts=(
     -v "${MOUNT_DIR}:${MOUNT_DIR}:rw"
+    -v "${AGENTS_VOLUME}:/opt/aidock/agents:z"
 )
 
 env_vars=(
@@ -1615,6 +1733,16 @@ if [[ "${RUN_MODE}" == "info" ]]; then
         fi
     else
         echo "Session image: ${SESSION_IMAGE_NAME} (none — first run will use base)"
+    fi
+    if engine_volume_exists "${AGENTS_VOLUME}"; then
+        v_size=$(engine_volume_size "${AGENTS_VOLUME}")
+        if [[ -n "$v_size" ]]; then
+            echo "Agents volume: ${AGENTS_VOLUME} (shared, ${v_size})"
+        else
+            echo "Agents volume: ${AGENTS_VOLUME} (shared)"
+        fi
+    else
+        echo "Agents volume: ${AGENTS_VOLUME} (absent — will be seeded on next build)"
     fi
     echo "Session hash:  ${SESSION_HASH} (CWD: ${MOUNT_DIR})"
     echo "Active image:  ${ACTIVE_IMAGE}"

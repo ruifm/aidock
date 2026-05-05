@@ -223,6 +223,7 @@ if $RUN_INTEGRATION; then
         agent_check=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
             -v "${CONFIG_DIR}/${test_agent}:${CONTAINER_HOME}/.${test_agent}/:rw" \
             -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
+            -v "${PROJECT_NAME}-agents:/opt/aidock/agents:z" \
             -e "HOME=${CONTAINER_HOME}" \
             -e "AGENT=${test_agent}" \
             -e "AGENT_CONFIG_DIR=.${test_agent}" \
@@ -854,6 +855,59 @@ EOF
     fi
 
     rm -rf "$fake_base"
+
+    # ── Shared agents volume ─────────────────────────────────────────────
+
+    section "shared agents volume"
+
+    # Containerfile no longer bakes agent CLIs into the image; they live
+    # in /opt/aidock/agents (the shared volume).
+    cf_emit=$("${LAUNCHER}" --emit-default Containerfile 2>/dev/null || true)
+    if echo "$cf_emit" | grep -q 'NPM_CONFIG_PREFIX="/opt/aidock/agents"'; then
+        pass "Containerfile sets NPM_CONFIG_PREFIX to shared volume"
+    else
+        fail "Containerfile sets NPM_CONFIG_PREFIX to shared volume" "got: $cf_emit"
+    fi
+
+    if echo "$cf_emit" | grep -q 'PATH="/opt/aidock/agents/bin:'; then
+        pass "Containerfile prepends /opt/aidock/agents/bin to PATH"
+    else
+        fail "Containerfile prepends /opt/aidock/agents/bin to PATH" "got: $cf_emit"
+    fi
+
+    if echo "$cf_emit" | grep -qE 'npm install -g.*@github/copilot'; then
+        fail "Containerfile no longer pre-installs agent CLIs" "@github/copilot still present in npm install"
+    else
+        pass "Containerfile no longer pre-installs agent CLIs"
+    fi
+
+    # build dry-run mentions the seed step (and includes the volume name).
+    fake_seed_dry="${CONFIG_DIR}/.fake-seed-${RANDOM}"
+    mkdir -p "$fake_seed_dry"
+    cat >"${fake_seed_dry}/engine" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "${fake_seed_dry}/engine"
+    build_dry=$(CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+    if echo "$build_dry" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot"; then
+        pass "build --dry-run announces agents-volume seed step"
+    else
+        fail "build --dry-run announces agents-volume seed step" "got: $build_dry"
+    fi
+
+    # When zero agents are configured, build dry-run skips the seed.
+    build_dry_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+    if echo "$build_dry_zero" | grep -q "would skip agents-volume seed (no configured agents)"; then
+        pass "build --dry-run skips seed when no agents configured"
+    else
+        fail "build --dry-run skips seed when no agents configured" "got: $build_dry_zero"
+    fi
+    rm -rf "$fake_seed_dry"
 
     # ── Host config bind-mount allowlist ─────────────────────────────────
 
