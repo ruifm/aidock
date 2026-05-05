@@ -1097,11 +1097,7 @@ if [[ "$RUN_MODE" == "build" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
     else
-        if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
-            echo "Building ${BASE_IMAGE_NAME} image (first build may take several minutes)..."
-        else
-            echo "Building ${BASE_IMAGE_NAME} image..."
-        fi
+        echo "Building ${BASE_IMAGE_NAME} image..."
         engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
             -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
@@ -1302,11 +1298,7 @@ fi
 FIRST_RUN=false
 
 if [[ "${needs_build}" == "true" ]]; then
-    if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
-        echo "Building ${BASE_IMAGE_NAME} image (first build may take several minutes)..."
-    else
-        echo "Building ${BASE_IMAGE_NAME} image..."
-    fi
+    echo "Building ${BASE_IMAGE_NAME} image..."
     engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
     touch "${BUILD_DIR}/.last-build"
     FIRST_RUN=true
