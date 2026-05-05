@@ -283,12 +283,11 @@ fi
 
 # ── LSP servers ──────────────────────────────────────────────────────
 
-section "LSP servers (8 expected)"
+section "LSP servers (7 expected)"
 
 check_bin "typescript-language-server" "/usr/local/bin/typescript-language-server"
 check_bin "basedpyright-langserver" "/usr/local/bin/basedpyright-langserver"
 check_bin "clangd" "/usr/bin/clangd"
-check_bin "lua-language-server" "/usr/local/bin/lua-language-server"
 check_bin "bash-language-server" "/usr/local/bin/bash-language-server"
 check_bin "docker-langserver" "/usr/local/bin/docker-langserver"
 check_bin "yaml-language-server" "/usr/local/bin/yaml-language-server"

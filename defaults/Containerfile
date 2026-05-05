@@ -55,17 +55,6 @@ RUN npm install -g \
 RUN pip install --break-system-packages \
         basedpyright ruff openpyxl Pillow python-docx
 
-# ── lua-language-server ─────────────────────────────────────────────
-RUN ARCH=$(uname -m) \
-    && if [ "$ARCH" = "x86_64" ]; then LUA_ARCH="linux-x64"; \
-       elif [ "$ARCH" = "aarch64" ]; then LUA_ARCH="linux-arm64"; \
-       else echo "Unsupported arch: $ARCH" && exit 1; fi \
-    && LUA_LS_VERSION=$(curl -s https://api.github.com/repos/LuaLS/lua-language-server/releases/latest | jq -r .tag_name) \
-    && mkdir -p /opt/lua-language-server \
-    && curl -L "https://github.com/LuaLS/lua-language-server/releases/download/${LUA_LS_VERSION}/lua-language-server-${LUA_LS_VERSION}-${LUA_ARCH}.tar.gz" \
-       | tar xz -C /opt/lua-language-server \
-    && ln -s /opt/lua-language-server/bin/lua-language-server /usr/local/bin/lua-language-server
-
 # ── Formatters ────────────────────────────────────────────────────────
 RUN npm install -g prettier
 
