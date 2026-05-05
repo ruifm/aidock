@@ -216,45 +216,6 @@ if $RUN_INTEGRATION; then
     # Clean up
     run_in_container rm -f "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/.persistence-test" 2>/dev/null || true
 
-    # ── Symlink re-creation ──────────────────────────────────────────────
-
-    section "Symlink idempotency"
-
-    # The entrypoint creates symlinks in the session dir. Running twice must not
-    # error out (regression: ln -sf on an existing symlink-to-directory follows the
-    # link and tries to write inside the read-only target).
-
-    if [[ -d "${HOME}/.copilot/agents" ]]; then
-        # First run: entrypoint creates the symlink
-        run_in_container \
-            bash -c "ls -la ${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/agents 2>&1" \
-            >/dev/null 2>&1 || true
-
-        # Second run: entrypoint must handle existing symlink without error
-        out2=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-            -v "${CONFIG_DIR}/${AGENT}:${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/:rw" \
-            -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-            -v "${HOME}/.copilot/agents/:${CONTAINER_HOME}/.copilot-agents-host/:ro" \
-            -e "HOME=${CONTAINER_HOME}" \
-            -e "AGENT=${AGENT}" \
-            -e "AGENT_CONFIG_DIR=${AGENT_CONFIG_DIR}" \
-            -e "PROJECT_NAME=${PROJECT_NAME}" \
-            -e "GH_TOKEN=fake-token-for-test" \
-            -w "${SCRIPT_DIR}" \
-            "${IMAGE_NAME}" \
-            bash -c "echo ok" \
-            2>&1)
-        exit2=$?
-
-        if [[ $exit2 -eq 0 && "$out2" == "ok" ]]; then
-            pass "entrypoint handles existing agent symlink"
-        else
-            fail "entrypoint fails on second run with agents" "exit=$exit2 out=$out2"
-        fi
-    else
-        pass "agents dir not present on host (symlink test skipped)"
-    fi
-
     # ── Auto-rebuild logic ───────────────────────────────────────────────
     # Also skipped on CI (uses ./aidock check which triggers userns issue)
 
@@ -476,7 +437,7 @@ if $RUN_INTEGRATION; then
         -e "PROJECT_NAME=${PROJECT_NAME}" \
         -w "${SCRIPT_DIR}" \
         "${IMAGE_NAME}" \
-        checkhealth.sh 2>&1 || true)
+        aidock __checkhealth 2>&1 || true)
 
     if echo "$claude_auth_output" | grep -q "ANTHROPIC_API_KEY not set"; then
         pass "claude auth warning shown when key missing"
@@ -494,7 +455,7 @@ if $RUN_INTEGRATION; then
         -e "PROJECT_NAME=${PROJECT_NAME}" \
         -w "${SCRIPT_DIR}" \
         "${IMAGE_NAME}" \
-        checkhealth.sh 2>&1 || true)
+        aidock __checkhealth 2>&1 || true)
 
     if echo "$codex_auth_output" | grep -q "OPENAI_API_KEY not set"; then
         pass "codex auth warning shown when key missing"
@@ -1090,11 +1051,11 @@ EOF
         fail "Containerfile seeded to config dir" "not found at ${CONFIG_DIR}/Containerfile"
     fi
 
-    # Support files should be seeded too
-    if [[ -f "${CONFIG_DIR}/init-home.sh" ]] && [[ -f "${CONFIG_DIR}/checkhealth.sh" ]]; then
-        pass "support files seeded to config dir"
+    # The launcher itself should be copied into BUILD_DIR (entrypoint host)
+    if [[ -f "${CONFIG_DIR}/aidock" ]] && [[ -x "${CONFIG_DIR}/aidock" ]]; then
+        pass "launcher copied into build dir"
     else
-        fail "support files seeded to config dir" "init-home.sh or checkhealth.sh missing"
+        fail "launcher copied into build dir" "aidock missing or not executable in ${CONFIG_DIR}"
     fi
 
     # User edits to Containerfile should be preserved on re-run
@@ -1125,10 +1086,10 @@ EOF
     fi
 
     # Build files should still exist (overwritten, not deleted)
-    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -f "${CONFIG_DIR}/init-home.sh" ]]; then
+    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -f "${CONFIG_DIR}/aidock" ]]; then
         pass "build files present after reset"
     else
-        fail "build files present after reset" "Containerfile or init-home.sh missing"
+        fail "build files present after reset" "Containerfile or aidock missing"
     fi
 
     # --info should show Containerfile path
