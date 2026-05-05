@@ -1231,6 +1231,7 @@ if [[ "$RUN_MODE" == "purge" ]]; then
             echo "[dry-run] Would remove: ${CONFIG_DIR}/${AGENT}"
         else
             echo "[dry-run] Would remove: ${CONFIG_DIR}"
+            echo "[dry-run] Would run: $ENGINE volume rm ${AGENTS_VOLUME}"
         fi
         exit 0
     fi
@@ -1250,6 +1251,11 @@ if [[ "$RUN_MODE" == "purge" ]]; then
     else
         rm -rf "$CONFIG_DIR"
         echo "Purged all data: deleted ${CONFIG_DIR}"
+        if engine_volume_exists "${AGENTS_VOLUME}"; then
+            "$ENGINE" volume rm "${AGENTS_VOLUME}" >/dev/null 2>&1 &&
+                echo "Removed agents volume ${AGENTS_VOLUME}" ||
+                echo "Could not remove agents volume ${AGENTS_VOLUME} (may be in use)"
+        fi
     fi
     echo "Defaults will be re-seeded on next run."
     exit 0
@@ -1394,6 +1400,7 @@ if [[ "$RUN_MODE" == "clean" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
         echo "[dry-run] Would run: $ENGINE rmi ${BASE_IMAGE_NAME}"
         echo "[dry-run] Would run: $ENGINE rmi <all ${PROJECT_NAME}-session-* images>"
+        echo "[dry-run] Would run: $ENGINE volume rm ${AGENTS_VOLUME}"
         [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
         [[ -d "${SESSION_DIR}" ]] && echo "[dry-run] Would remove: ${SESSION_DIR}"
         echo "[dry-run] Would run: $ENGINE image prune -f"
@@ -1406,6 +1413,11 @@ if [[ "$RUN_MODE" == "clean" ]]; then
             while IFS= read -r img; do
                 "$ENGINE" rmi "$img" >/dev/null 2>&1 && echo "  Removed image ${img}"
             done <<<"$session_images"
+        fi
+        if engine_volume_exists "${AGENTS_VOLUME}"; then
+            "$ENGINE" volume rm "${AGENTS_VOLUME}" >/dev/null 2>&1 &&
+                echo "  Removed agents volume ${AGENTS_VOLUME}" ||
+                echo "  Could not remove agents volume ${AGENTS_VOLUME} (may be in use)"
         fi
         if [[ -d "${CONFIG_DIR}" ]]; then
             rm -rf "${CONFIG_DIR}"

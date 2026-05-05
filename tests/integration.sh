@@ -424,6 +424,27 @@ if $RUN_UNIT; then
     else
         fail "clean --dry-run shows rmi command" "got: $clean_dry"
     fi
+    if echo "$clean_dry" | grep -q "Would run: .* volume rm ${PROJECT_NAME}-agents"; then
+        pass "clean --dry-run removes agents volume"
+    else
+        fail "clean --dry-run removes agents volume" "got: $clean_dry"
+    fi
+
+    # purge --dry-run removes the agents volume on global purge
+    purge_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" purge --dry-run 2>&1)
+    if echo "$purge_dry" | grep -q "Would run: .* volume rm ${PROJECT_NAME}-agents"; then
+        pass "purge --dry-run removes agents volume"
+    else
+        fail "purge --dry-run removes agents volume" "got: $purge_dry"
+    fi
+
+    # purge --agent X --dry-run leaves the agents volume alone
+    purge_agent_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" purge --dry-run --agent copilot 2>&1 || true)
+    if ! echo "$purge_agent_dry" | grep -q "volume rm ${PROJECT_NAME}-agents"; then
+        pass "purge --agent does not touch agents volume"
+    else
+        fail "purge --agent does not touch agents volume" "got: $purge_agent_dry"
+    fi
 
     # --version shows version string
     version_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" --version 2>&1)
