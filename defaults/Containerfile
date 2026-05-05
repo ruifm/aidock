@@ -18,13 +18,11 @@ RUN dnf install -y \
         # Archives
         tar gzip xz unzip p7zip \
         # Text & data
-        diffutils patch bc man-db man-pages \
+        diffutils patch \
         # Process management
         which procps-ng findutils \
         # Runtimes & compilers
         nodejs npm python3 python3-pip \
-        # Debugging & profiling
-        gdb valgrind strace ltrace \
         # Document analysis
         poppler-utils tesseract w3m xmlstarlet pandoc \
         # Image manipulation

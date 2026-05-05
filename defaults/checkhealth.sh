@@ -314,7 +314,7 @@ check_bin "shellcheck" "PATH"
 
 section "Dev tools"
 
-for tool in git jq rg fd just curl gdb valgrind strace; do
+for tool in git jq rg fd just curl; do
     check_bin "$tool" "PATH"
 done
 
