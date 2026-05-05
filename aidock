@@ -1395,21 +1395,37 @@ add_host_config_mount() {
 
 case "$AGENT" in
     copilot)
-        for f in apps.json versions.json hosts.json; do
+        for f in apps.json versions.json hosts.json settings.json; do
             add_host_config_mount \
                 "${HOME}/.config/github-copilot/${f}" \
                 "${CONTAINER_HOME}/.config/github-copilot/${f}"
         done
+        # Skills directory: per-skill prompt overrides
+        add_host_config_mount \
+            "${HOME}/.config/github-copilot/skills" \
+            "${CONTAINER_HOME}/.config/github-copilot/skills"
         ;;
     claude)
         add_host_config_mount \
             "${HOME}/.claude/.credentials.json" \
             "${CONTAINER_HOME}/.claude/.credentials.json"
+        add_host_config_mount \
+            "${HOME}/.claude/settings.json" \
+            "${CONTAINER_HOME}/.claude/settings.json"
+        add_host_config_mount \
+            "${HOME}/.claude/CLAUDE.md" \
+            "${CONTAINER_HOME}/.claude/CLAUDE.md"
         ;;
     codex)
         add_host_config_mount \
             "${HOME}/.codex/auth.json" \
             "${CONTAINER_HOME}/.codex/auth.json"
+        add_host_config_mount \
+            "${HOME}/.codex/config.toml" \
+            "${CONTAINER_HOME}/.codex/config.toml"
+        add_host_config_mount \
+            "${HOME}/.codex/AGENTS.md" \
+            "${CONTAINER_HOME}/.codex/AGENTS.md"
         ;;
 esac
 

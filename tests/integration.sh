@@ -984,18 +984,25 @@ EOF
     section "Host config bind-mount allowlist"
 
     fake_home="${TEST_TMPDIR}/fake-home-${RANDOM}"
-    mkdir -p "${fake_home}/.config/github-copilot"
+    mkdir -p "${fake_home}/.config/github-copilot/skills"
     mkdir -p "${fake_home}/.claude"
     mkdir -p "${fake_home}/.codex"
-    # Copilot: create apps.json and hosts.json, but NOT versions.json.
+    # Copilot: create apps.json, hosts.json, settings.json (but NOT versions.json).
     echo '{}' >"${fake_home}/.config/github-copilot/apps.json"
     echo '{}' >"${fake_home}/.config/github-copilot/hosts.json"
+    echo '{}' >"${fake_home}/.config/github-copilot/settings.json"
     echo '{}' >"${fake_home}/.claude/.credentials.json"
+    echo '{}' >"${fake_home}/.claude/settings.json"
+    echo '# rules' >"${fake_home}/.claude/CLAUDE.md"
     echo '{}' >"${fake_home}/.codex/auth.json"
+    echo '' >"${fake_home}/.codex/config.toml"
+    echo '# rules' >"${fake_home}/.codex/AGENTS.md"
 
     cop_dry=$(HOME="$fake_home" timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent copilot 2>&1 || true)
     if echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/apps.json:${CONTAINER_HOME}/.config/github-copilot/apps.json:rw" &&
         echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/hosts.json:${CONTAINER_HOME}/.config/github-copilot/hosts.json:rw" &&
+        echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/settings.json:${CONTAINER_HOME}/.config/github-copilot/settings.json:rw" &&
+        echo "$cop_dry" | grep -q "${fake_home}/.config/github-copilot/skills:${CONTAINER_HOME}/.config/github-copilot/skills:rw" &&
         ! echo "$cop_dry" | grep -q "versions.json"; then
         pass "copilot mounts only allowlisted host config files that exist"
     else
@@ -1003,17 +1010,21 @@ EOF
     fi
 
     cla_dry=$(HOME="$fake_home" ANTHROPIC_API_KEY=fake timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent claude 2>&1 || true)
-    if echo "$cla_dry" | grep -q "${fake_home}/.claude/.credentials.json:${CONTAINER_HOME}/.claude/.credentials.json:rw"; then
-        pass "claude mounts host credentials when present"
+    if echo "$cla_dry" | grep -q "${fake_home}/.claude/.credentials.json:${CONTAINER_HOME}/.claude/.credentials.json:rw" &&
+        echo "$cla_dry" | grep -q "${fake_home}/.claude/settings.json:${CONTAINER_HOME}/.claude/settings.json:rw" &&
+        echo "$cla_dry" | grep -q "${fake_home}/.claude/CLAUDE.md:${CONTAINER_HOME}/.claude/CLAUDE.md:rw"; then
+        pass "claude mounts credentials, settings, and CLAUDE.md when present"
     else
-        fail "claude mounts host credentials when present" "got: $cla_dry"
+        fail "claude mounts credentials, settings, and CLAUDE.md when present" "got: $cla_dry"
     fi
 
     cod_dry=$(HOME="$fake_home" OPENAI_API_KEY=fake timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --agent codex 2>&1 || true)
-    if echo "$cod_dry" | grep -q "${fake_home}/.codex/auth.json:${CONTAINER_HOME}/.codex/auth.json:rw"; then
-        pass "codex mounts host auth.json when present"
+    if echo "$cod_dry" | grep -q "${fake_home}/.codex/auth.json:${CONTAINER_HOME}/.codex/auth.json:rw" &&
+        echo "$cod_dry" | grep -q "${fake_home}/.codex/config.toml:${CONTAINER_HOME}/.codex/config.toml:rw" &&
+        echo "$cod_dry" | grep -q "${fake_home}/.codex/AGENTS.md:${CONTAINER_HOME}/.codex/AGENTS.md:rw"; then
+        pass "codex mounts auth.json, config.toml, and AGENTS.md when present"
     else
-        fail "codex mounts host auth.json when present" "got: $cod_dry"
+        fail "codex mounts auth.json, config.toml, and AGENTS.md when present" "got: $cod_dry"
     fi
 
     empty_home="${TEST_TMPDIR}/empty-home-${RANDOM}"
