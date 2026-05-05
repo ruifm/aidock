@@ -1444,7 +1444,7 @@ agent_config_dir=""
 
 case "$AGENT" in
     copilot)
-        agent_cmd=(copilot --autopilot --enable-all-github-mcp-tools --yolo --resume)
+        agent_cmd=(copilot --autopilot --enable-all-github-mcp-tools --yolo --continue)
         agent_config_dir=".copilot"
         ;;
     claude)
@@ -1452,7 +1452,10 @@ case "$AGENT" in
         agent_config_dir=".claude"
         ;;
     codex)
-        agent_cmd=(codex --yolo)
+        # codex has no --continue flag; resume the most recent session if one
+        # exists, otherwise start fresh. The check runs inside the container.
+        # shellcheck disable=SC2016
+        agent_cmd=(bash -c 'if [ -n "$(find "$HOME/.codex/sessions" -name "*.jsonl" -print -quit 2>/dev/null)" ]; then exec codex --yolo resume --last "$@"; else exec codex --yolo "$@"; fi' codex)
         agent_config_dir=".codex"
         ;;
     *)
