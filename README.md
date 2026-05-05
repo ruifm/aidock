@@ -84,6 +84,7 @@ aidock [command] [options] [-- agent-args...]
 | `drop-session` | Drop this CWD's session image (back to base) |
 | `purge` | Delete config + session data (asks confirmation) |
 | `list-sessions` | List recorded per-project session images |
+| `prune` | Show (or remove with `--orphans`) sessions whose CWD is gone |
 
 ### Common workflows
 
@@ -104,6 +105,8 @@ aidock update-agents              # bump agent versions inside this project's im
 # Project sessions
 aidock list-sessions              # which projects have committed state
 aidock drop-session               # drop this project's image, fall back to base
+aidock prune                      # show sessions whose CWD no longer exists
+aidock prune --orphans            # actually remove them
 aidock info                       # show engine, image, config paths
 
 # Debugging

@@ -707,12 +707,70 @@ if $RUN_UNIT; then
     listed=$(timeout "${TIMEOUT}" "${LAUNCHER}" list-sessions 2>&1 || true)
     if echo "$listed" | grep -q "$fake_hash" &&
         echo "$listed" | grep -q "/tmp/some-fake-cwd" &&
-        echo "$listed" | grep -q "missing"; then
+        echo "$listed" | grep -q "missing" &&
+        echo "$listed" | grep -q "SIZE"; then
         pass "list-sessions renders recorded sessions"
     else
         fail "list-sessions renders recorded sessions" "got: $listed"
     fi
     rm -f "${sd}/${fake_hash}"
+
+    # ── prune ───────────────────────────────────────────────────────────
+
+    section "prune"
+
+    # Seed a fake orphan record (CWD does not exist) and a live one
+    rm -rf "$sd" 2>/dev/null || true
+    mkdir -p "$sd"
+    orphan_hash="aaaaaaaaaaaa"
+    live_hash="bbbbbbbbbbbb"
+    live_cwd=$(mktemp -d)
+    echo "/tmp/this-cwd-does-not-exist-xyz" >"${sd}/${orphan_hash}"
+    echo "$live_cwd" >"${sd}/${live_hash}"
+
+    # bare prune is a dry-run listing
+    p_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" prune 2>&1 || true)
+    if echo "$p_out" | grep -q "$orphan_hash" &&
+        ! echo "$p_out" | grep -q "$live_hash" &&
+        echo "$p_out" | grep -q "prune --orphans"; then
+        pass "prune lists orphans without removing"
+    else
+        fail "prune lists orphans without removing" "got: $p_out"
+    fi
+
+    # Records still on disk after dry-run
+    if [[ -f "${sd}/${orphan_hash}" && -f "${sd}/${live_hash}" ]]; then
+        pass "prune dry-run preserves records"
+    else
+        fail "prune dry-run preserves records" "files missing"
+    fi
+
+    # prune --orphans actually removes
+    timeout "${TIMEOUT}" "${LAUNCHER}" prune --orphans >/dev/null 2>&1 || true
+    if [[ ! -f "${sd}/${orphan_hash}" && -f "${sd}/${live_hash}" ]]; then
+        pass "prune --orphans removes orphan records only"
+    else
+        fail "prune --orphans removes orphan records only" "orphan still=$(ls "${sd}")"
+    fi
+
+    # --orphans rejected outside prune
+    o_outside=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --orphans 2>&1 || true)
+    if echo "$o_outside" | grep -qi "only valid with the 'prune'"; then
+        pass "--orphans rejected outside prune"
+    else
+        fail "--orphans rejected outside prune" "got: $o_outside"
+    fi
+
+    # No orphans → friendly message
+    no_orph=$(timeout "${TIMEOUT}" "${LAUNCHER}" prune 2>&1 || true)
+    if echo "$no_orph" | grep -q "No orphan sessions found"; then
+        pass "prune prints friendly message when no orphans"
+    else
+        fail "prune prints friendly message when no orphans" "got: $no_orph"
+    fi
+
+    rm -rf "$live_cwd"
+    rm -f "${sd}/${live_hash}"
 
     # ── drop-session ────────────────────────────────────────────────────
 

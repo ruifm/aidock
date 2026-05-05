@@ -292,6 +292,7 @@ Commands:
   drop-session   Remove this CWD's session image + record (next run uses base)
   purge          Delete config + session data (with confirmation)
   list-sessions  List recorded per-CWD sessions
+  prune          Show (or remove with --orphans) sessions whose CWD is gone
 
 Options:
   -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
@@ -306,6 +307,7 @@ Command-specific options:
   shell:         --commit POLICY  Override commit_on_exit (always|prompt|never)
   purge:         --force       Skip confirmation prompt (for scripting)
                  -a, --agent NAME  Restrict purge to one agent's data dir
+  prune:         --orphans     Actually remove orphan sessions (default: dry-run)
 
 Agent args:
   Arguments after -- are passed to the agent binary.
@@ -366,6 +368,13 @@ engine_image_exists() {
     else
         "$ENGINE" image inspect "$1" &>/dev/null
     fi
+}
+
+# Print human-readable size for an image tag (e.g. "412 MB"), or empty
+# string when the image is missing.
+engine_image_size() {
+    local tag="$1"
+    "$ENGINE" images --format '{{.Size}}' "$tag" 2>/dev/null | head -n1
 }
 
 # engine_run execs into the container — this function does not return.
@@ -709,6 +718,7 @@ DRY_RUN=false
 BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
 FORCE=false
+PRUNE_ORPHANS=false
 COMMIT_POLICY_OVERRIDE=""
 
 readonly VERSION="0.2.0"
@@ -786,7 +796,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset-build drop-session purge list-sessions"
+readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset-build drop-session purge list-sessions prune"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -836,6 +846,11 @@ while [[ $# -gt 0 ]]; do
         --force)
             [[ "$RUN_MODE" == "purge" ]] || die "--force is only valid with the 'purge' command"
             FORCE=true
+            shift
+            ;;
+        --orphans)
+            [[ "$RUN_MODE" == "prune" ]] || die "--orphans is only valid with the 'prune' command"
+            PRUNE_ORPHANS=true
             shift
             ;;
         --commit | --commit=*)
@@ -1134,7 +1149,7 @@ if [[ "$RUN_MODE" == "list-sessions" ]]; then
         echo "No recorded sessions."
         exit 0
     fi
-    printf '%-14s  %-8s  %s\n' "HASH" "IMAGE" "CWD"
+    printf '%-14s  %-8s  %-10s  %s\n' "HASH" "IMAGE" "SIZE" "CWD"
     for f in "$SESSION_DIR"/*; do
         [[ -f "$f" ]] || continue
         name=$(basename "$f")
@@ -1145,11 +1160,78 @@ if [[ "$RUN_MODE" == "list-sessions" ]]; then
         img_tag=$(session_image_name "$name")
         if "$ENGINE" image inspect "$img_tag" &>/dev/null; then
             img_state="present"
+            img_size=$(engine_image_size "$img_tag")
+            [[ -n "$img_size" ]] || img_size="—"
         else
             img_state="missing"
+            img_size="—"
         fi
-        printf '%-14s  %-8s  %s\n' "$name" "$img_state" "$cwd"
+        printf '%-14s  %-8s  %-10s  %s\n' "$name" "$img_state" "$img_size" "$cwd"
     done
+    exit 0
+fi
+
+# ── Handle prune (early exit) ──────────────────────────────────────
+# Drops session records (and their images) whose recorded CWD no longer
+# exists on the host. Bare 'prune' is a dry-run; 'prune --orphans'
+# actually removes. No --older-than / size-based pruning yet.
+
+if [[ "$RUN_MODE" == "prune" ]]; then
+    if [[ ! -d "$SESSION_DIR" ]] || [[ -z "$(ls -A "$SESSION_DIR" 2>/dev/null)" ]]; then
+        echo "No recorded sessions."
+        exit 0
+    fi
+
+    orphans=()
+    for f in "$SESSION_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        case "$name" in
+            *.lock) continue ;;
+        esac
+        cwd=$(head -n1 "$f" 2>/dev/null || true)
+        if [[ -z "$cwd" || ! -d "$cwd" ]]; then
+            orphans+=("$name")
+        fi
+    done
+
+    if [[ ${#orphans[@]} -eq 0 ]]; then
+        echo "No orphan sessions found."
+        exit 0
+    fi
+
+    if [[ "$PRUNE_ORPHANS" != "true" ]]; then
+        echo "Orphan sessions (CWD no longer exists on host):"
+        for name in "${orphans[@]}"; do
+            cwd=$(head -n1 "${SESSION_DIR}/${name}" 2>/dev/null || echo "?")
+            echo "  ${name}  (was: ${cwd})"
+        done
+        echo ""
+        echo "Run 'aidock prune --orphans' to remove."
+        exit 0
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        for name in "${orphans[@]}"; do
+            img_tag=$(session_image_name "$name")
+            echo "[dry-run] Would run: $ENGINE rmi ${img_tag}"
+            echo "[dry-run] Would remove: ${SESSION_DIR}/${name}"
+            echo "[dry-run] Would remove: ${SESSION_DIR}/${name}.lock"
+        done
+        exit 0
+    fi
+
+    for name in "${orphans[@]}"; do
+        img_tag=$(session_image_name "$name")
+        if "$ENGINE" image inspect "$img_tag" &>/dev/null; then
+            "$ENGINE" rmi "$img_tag" >/dev/null 2>&1 &&
+                echo "Removed session image ${img_tag}" ||
+                echo "Failed to remove image ${img_tag}" >&2
+        fi
+        rm -f "${SESSION_DIR}/${name}" "${SESSION_DIR}/${name}.lock"
+        echo "Removed session record ${name}"
+    done
+    echo "Pruned ${#orphans[@]} orphan session(s)."
     exit 0
 fi
 
@@ -1525,7 +1607,12 @@ if [[ "${RUN_MODE}" == "info" ]]; then
         echo "Base image:    ${BASE_IMAGE_NAME} (not built)"
     fi
     if engine_image_exists "${SESSION_IMAGE_NAME}"; then
-        echo "Session image: ${SESSION_IMAGE_NAME} (committed for this CWD)"
+        s_size=$(engine_image_size "${SESSION_IMAGE_NAME}")
+        if [[ -n "$s_size" ]]; then
+            echo "Session image: ${SESSION_IMAGE_NAME} (committed for this CWD, ${s_size})"
+        else
+            echo "Session image: ${SESSION_IMAGE_NAME} (committed for this CWD)"
+        fi
     else
         echo "Session image: ${SESSION_IMAGE_NAME} (none — first run will use base)"
     fi
