@@ -531,6 +531,34 @@ if $RUN_UNIT; then
         fail "run --dry-run redacts auth tokens" "got: $(echo "$dry_output" | grep -o 'GH_TOKEN=[^ ]*')"
     fi
 
+    # run dry-run no longer includes --rm (commit-on-exit owns lifecycle)
+    if echo "$dry_output" | grep -q -- '--rm'; then
+        fail "run --dry-run omits --rm" "got: $dry_output"
+    else
+        pass "run --dry-run omits --rm"
+    fi
+
+    # run dry-run advertises commit_on_exit policy
+    if echo "$dry_output" | grep -q '\[dry-run\] commit_on_exit='; then
+        pass "run --dry-run shows commit policy hint"
+    else
+        fail "run --dry-run shows commit policy hint" "got: $dry_output"
+    fi
+
+    # check dry-run keeps --rm (ephemeral, no commit)
+    check_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" check --dry-run --no-rebuild 2>&1 || true)
+    if echo "$check_dry" | grep -q -- '--rm'; then
+        pass "check --dry-run keeps --rm"
+    else
+        fail "check --dry-run keeps --rm" "got: $check_dry"
+    fi
+
+    if echo "$check_dry" | grep -q '\[dry-run\] commit_on_exit='; then
+        fail "check --dry-run does not advertise commit" "got: $check_dry"
+    else
+        pass "check --dry-run does not advertise commit"
+    fi
+
     # NO_UPDATE_NOTIFIER / COPILOT_AUTO_UPDATE were dropped along with
     # ephemeral drift detection: agent self-updates now persist via the
     # per-CWD session image commit on exit.

@@ -105,26 +105,117 @@ engine_image_exists() {
 
 # engine_run execs into the container — this function does not return.
 # In dry-run mode, prints the command instead of executing.
+# Used for ephemeral commands (check) that must not commit.
 engine_run() {
     local userns_flag=()
     if [[ "$ENGINE" == "podman" ]]; then
-        # Map host UID into the container as root — agent can install packages freely,
-        # but files on bind mounts are still owned by the real user on the host.
         # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
         userns_flag=(--userns=keep-id:uid=0,gid=0)
     else
-        # Docker: run as host UID with passwordless sudo available (installed in image).
         userns_flag=(--user "$(id -u):$(id -g)")
     fi
     if [[ "$DRY_RUN" == "true" ]]; then
         local cmd
         cmd=$(printf '%q ' "$ENGINE" run "${userns_flag[@]}" "$@")
-        # Redact secrets (tokens, keys) from dry-run output
         cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
         echo "$cmd"
         exit 0
     fi
     exec "$ENGINE" run "${userns_flag[@]}" "$@"
+}
+
+# engine_run_committing runs the container without --rm, waits for it
+# to exit, and then applies the COMMIT_POLICY: empty diff or 'never'
+# discards; 'always' commits to SESSION_IMAGE_NAME; 'prompt' asks the
+# user with a 10s default-yes timeout. Always removes the container
+# afterwards. Exits with the container's exit code.
+#
+# Callers must NOT pass --rm; this function manages container lifetime.
+engine_run_committing() {
+    local userns_flag=()
+    if [[ "$ENGINE" == "podman" ]]; then
+        # shellcheck disable=SC2054
+        userns_flag=(--userns=keep-id:uid=0,gid=0)
+    else
+        userns_flag=(--user "$(id -u):$(id -g)")
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        local cmd
+        cmd=$(printf '%q ' "$ENGINE" run "${userns_flag[@]}" "$@")
+        cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
+        echo "$cmd"
+        echo "[dry-run] commit_on_exit=${COMMIT_POLICY} (would commit non-empty diff to ${SESSION_IMAGE_NAME})"
+        exit 0
+    fi
+    local rc=0
+    "$ENGINE" run "${userns_flag[@]}" "$@" || rc=$?
+    _maybe_commit_container "$CONTAINER_NAME" "$rc"
+    exit "$rc"
+}
+
+# Inspect $1 (container name) for filesystem changes, and depending on
+# $COMMIT_POLICY commit them to $SESSION_IMAGE_NAME or discard them.
+# Always rm's the container at the end. $2 is the container exit code,
+# used only to skip prompts on signal-style exits if needed in future.
+_maybe_commit_container() {
+    local cname="$1"
+    # Capture diff (ignored when policy is never; cheap so we run it anyway
+    # for reporting consistency in always/prompt).
+    local changed_lines=0
+    local diff_out=""
+    if "$ENGINE" container exists "$cname" 2>/dev/null ||
+        "$ENGINE" container inspect "$cname" &>/dev/null; then
+        diff_out=$("$ENGINE" diff "$cname" 2>/dev/null || true)
+    fi
+    if [[ -n "$diff_out" ]]; then
+        changed_lines=$(printf '%s\n' "$diff_out" | wc -l)
+    fi
+
+    local should_commit=false
+    if [[ "$changed_lines" -eq 0 ]]; then
+        :
+    else
+        case "$COMMIT_POLICY" in
+            always) should_commit=true ;;
+            never) should_commit=false ;;
+            prompt)
+                if _prompt_commit "$changed_lines"; then
+                    should_commit=true
+                fi
+                ;;
+        esac
+    fi
+
+    if [[ "$should_commit" == "true" ]]; then
+        echo "Committing ${changed_lines} filesystem changes to ${SESSION_IMAGE_NAME}..." >&2
+        "$ENGINE" commit "$cname" "$SESSION_IMAGE_NAME" >/dev/null
+        "$ENGINE" image prune -f >/dev/null 2>&1 || true
+    fi
+
+    "$ENGINE" rm -f "$cname" >/dev/null 2>&1 || true
+}
+
+# Ask "commit? [Y/n]" with a 10s default-yes timeout. Returns 0=commit,
+# 1=discard. Non-tty stdin defaults to yes.
+_prompt_commit() {
+    local n="$1"
+    if [[ ! -t 0 ]]; then
+        echo "Container changed ${n} paths; committing (non-interactive default)." >&2
+        return 0
+    fi
+    echo "" >&2
+    echo "Container changed ${n} paths." >&2
+    local reply=""
+    if read -r -t 10 -p "Commit to ${SESSION_IMAGE_NAME}? [Y/n] " reply </dev/tty 2>/dev/null; then
+        case "${reply,,}" in
+            n | no) return 1 ;;
+            *) return 0 ;;
+        esac
+    else
+        echo "" >&2
+        echo "(timeout — defaulting to yes)" >&2
+        return 0
+    fi
 }
 
 # ── Derived paths ────────────────────────────────────────────────────
@@ -701,8 +792,7 @@ if [[ "${RUN_MODE}" == "check" ]]; then
 fi
 
 if [[ "${RUN_MODE}" == "shell" ]]; then
-    engine_run \
-        --rm \
+    engine_run_committing \
         -it \
         --name "${CONTAINER_NAME}" \
         --hostname "${PROJECT_NAME}" \
@@ -717,8 +807,7 @@ fi
 
 # ── Launch agent ────────────────────────────────────────────────────
 
-engine_run \
-    --rm \
+engine_run_committing \
     -it \
     --name "${CONTAINER_NAME}" \
     --hostname "${PROJECT_NAME}" \
