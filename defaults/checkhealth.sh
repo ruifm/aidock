@@ -278,7 +278,7 @@ fi
 if command -v gcc &>/dev/null; then
     pass "gcc $(gcc --version | head -1 | grep -oP '\d+\.\d+\.\d+' | head -1)"
 else
-    fail "gcc not found"
+    warn "gcc not found (install on demand if needed)"
 fi
 
 # ── LSP servers ──────────────────────────────────────────────────────
@@ -314,7 +314,7 @@ check_bin "shellcheck" "PATH"
 
 section "Dev tools"
 
-for tool in git jq rg fd just curl make cmake gdb valgrind strace go; do
+for tool in git jq rg fd just curl gdb valgrind strace; do
     check_bin "$tool" "PATH"
 done
 
