@@ -28,6 +28,7 @@ Commands:
   check          Run container healthcheck
   info           Show engine, image, and agent info
   reset          Reset config to defaults (preserves session data)
+  list-sessions  List recorded per-CWD sessions
 
 Options:
   -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
@@ -358,7 +359,7 @@ validate_agent() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update clean shell check info reset"
+readonly AVAILABLE_COMMANDS="run build update clean shell check info reset list-sessions"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -531,6 +532,32 @@ if [[ "$RUN_MODE" == "reset" ]]; then
         echo "Config dir: ${CONFIG_DIR}/"
         echo "Rebuild will be triggered on next run."
     fi
+    exit 0
+fi
+
+# ── Handle list-sessions (early exit) ───────────────────────────────
+
+if [[ "$RUN_MODE" == "list-sessions" ]]; then
+    if [[ ! -d "$SESSION_DIR" ]] || [[ -z "$(ls -A "$SESSION_DIR" 2>/dev/null)" ]]; then
+        echo "No recorded sessions."
+        exit 0
+    fi
+    printf '%-14s  %-8s  %s\n' "HASH" "IMAGE" "CWD"
+    for f in "$SESSION_DIR"/*; do
+        [[ -f "$f" ]] || continue
+        name=$(basename "$f")
+        case "$name" in
+            *.lock) continue ;;
+        esac
+        cwd=$(head -n1 "$f" 2>/dev/null || echo "?")
+        img_tag=$(session_image_name "$name")
+        if "$ENGINE" image inspect "$img_tag" &>/dev/null; then
+            img_state="present"
+        else
+            img_state="missing"
+        fi
+        printf '%-14s  %-8s  %s\n' "$name" "$img_state" "$cwd"
+    done
     exit 0
 fi
 

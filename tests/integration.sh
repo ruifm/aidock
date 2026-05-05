@@ -789,6 +789,34 @@ if $RUN_UNIT; then
     # Restore conf
     echo "$saved_conf" >"${CONFIG_DIR}/aidock.conf"
 
+    # ── list-sessions ────────────────────────────────────────────────────
+
+    section "list-sessions"
+
+    # With no recorded sessions, command exits 0 with friendly message
+    rm -rf "${TEST_SESSION_DIR:-$HOME/.local/share/aidock/sessions}" 2>/dev/null || true
+    no_sess=$(timeout "${TIMEOUT}" "${LAUNCHER}" list-sessions 2>&1 || true)
+    if echo "$no_sess" | grep -q "No recorded sessions"; then
+        pass "list-sessions empty when nothing recorded"
+    else
+        fail "list-sessions empty when nothing recorded" "got: $no_sess"
+    fi
+
+    # Seed a fake session record and expect it to render with HASH/IMAGE/CWD
+    sd="${XDG_DATA_HOME:-$HOME/.local/share}/aidock/sessions"
+    mkdir -p "$sd"
+    fake_hash="abcdef012345"
+    echo "/tmp/some-fake-cwd" >"${sd}/${fake_hash}"
+    listed=$(timeout "${TIMEOUT}" "${LAUNCHER}" list-sessions 2>&1 || true)
+    if echo "$listed" | grep -q "$fake_hash" &&
+        echo "$listed" | grep -q "/tmp/some-fake-cwd" &&
+        echo "$listed" | grep -q "missing"; then
+        pass "list-sessions renders recorded sessions"
+    else
+        fail "list-sessions renders recorded sessions" "got: $listed"
+    fi
+    rm -f "${sd}/${fake_hash}"
+
     # ── First-run message ────────────────────────────────────────────────
 
     section "First-run message"
