@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![CI](https://github.com/ruifm/aidock/actions/workflows/ci.yml/badge.svg)](https://github.com/ruifm/aidock/actions/workflows/ci.yml)
-[![Bash](https://img.shields.io/badge/language-bash-green.svg)](src/aidock)
+[![Bash](https://img.shields.io/badge/language-bash-green.svg)](aidock)
 [![Podman](https://img.shields.io/badge/engine-podman%20%7C%20docker-orange.svg)](#how-it-works)
 
 Run AI coding agents (Copilot CLI, Claude Code, Codex) inside a per-project, stateful container. One command, container-isolated, batteries included.
@@ -40,7 +40,7 @@ aidock handles all of that. You get a single Bash script that builds a container
 
 ```bash
 # Grab the script
-curl -fsSL https://raw.githubusercontent.com/ruifm/aidock/main/src/aidock -o ~/.local/bin/aidock
+curl -fsSL https://raw.githubusercontent.com/ruifm/aidock/main/aidock -o ~/.local/bin/aidock
 chmod +x ~/.local/bin/aidock
 ```
 

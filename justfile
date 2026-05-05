@@ -2,7 +2,7 @@
 # Usage: just <recipe>
 
 export PROJECT_NAME := "aidock"
-launcher := "src/" + PROJECT_NAME
+launcher := "./" + PROJECT_NAME
 
 # Build the container image
 build:
@@ -50,7 +50,7 @@ info:
 
 # ── Code quality ─────────────────────────────────────────────────────
 
-bash_files := "src/aidock tests/integration.sh"
+bash_files := "aidock tests/integration.sh"
 
 # Format all source files
 fmt:
@@ -62,7 +62,7 @@ lint:
     shellcheck {{bash_files}}
     yamllint -c .yamllint.yml .github/workflows/ .yamllint.yml .hadolint.yaml
     @echo "Validating inlined Containerfile via hadolint..."
-    src/aidock --emit-default Containerfile | hadolint -
+    ./aidock --emit-default Containerfile | hadolint -
     @echo "Validating JSON..."; for f in $(find . -name '*.json' -not -path './node_modules/*'); do jq empty "$f" || exit 1; done
 
 # Format + lint + unit tests

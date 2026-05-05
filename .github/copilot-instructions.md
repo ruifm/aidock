@@ -6,15 +6,15 @@ aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Co
 
 ## Repository layout
 
-- `src/aidock` — the launcher script. This is the file users install and run; there is no separate dist/build step.
+- `aidock` — the launcher script. This is the file users install and run; there is no separate dist/build step.
 - `tests/integration.sh` — unit and integration test suite.
 - `justfile` — task runner recipes and single source of truth for the project name.
-- `~/.config/aidock/` (per-user, not in repo) — `Containerfile`, `init-home.sh`, `checkhealth.sh`, `aidock.conf`, seeded on first run from inline heredocs in `src/aidock`. User edits there are preserved.
+- `~/.config/aidock/` (per-user, not in repo) — `Containerfile`, `init-home.sh`, `checkhealth.sh`, `aidock.conf`, seeded on first run from inline heredocs in `aidock`. User edits there are preserved.
 
 ## Development rules
 
-- Edit `src/aidock` directly. There is no generated copy.
-- The default Containerfile / init-home.sh / checkhealth.sh live inline in `src/aidock` as quoted heredocs (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`). Use `src/aidock --emit-default <name>` to print one out (used by `just lint` for hadolint).
+- Edit `aidock` directly. There is no generated copy.
+- The default Containerfile / init-home.sh / checkhealth.sh live inline in `aidock` as quoted heredocs (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`). Use `aidock --emit-default <name>` to print one out (used by `just lint` for hadolint).
 - Run `just check` before committing (formats, lints, runs unit tests).
 - Use `just fmt` to format (shfmt for Bash, prettier for JSON/YAML).
 - Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
@@ -33,7 +33,7 @@ aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Co
 - **Rebuild detection**: timestamp-based comparison of config files against a `.last-build` marker.
 - **User namespace mapping**: Podman uses `--userns=keep-id`; Docker uses `--user` with dynamic passwd entry.
 - **CWD mirroring**: the project is mounted at the same absolute path inside the container.
-- **Agent abstraction**: a case statement in `src/aidock` maps agent names to their CLI commands, config dirs, and auth mechanisms.
+- **Agent abstraction**: a case statement in `aidock` maps agent names to their CLI commands, config dirs, and auth mechanisms.
 
 ## Testing
 

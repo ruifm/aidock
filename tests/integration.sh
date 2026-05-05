@@ -13,7 +13,7 @@ FAIL=0
 IMAGE_NAME="${PROJECT_NAME}-base"
 CONTAINER_HOME="/home/${PROJECT_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-LAUNCHER="${SCRIPT_DIR}/src/aidock"
+LAUNCHER="${SCRIPT_DIR}/aidock"
 AGENT="copilot"
 AGENT_CONFIG_DIR=".copilot"
 
