@@ -996,6 +996,32 @@ EOF
         fail "__init-home guards required env vars" "got: $ih_out"
     fi
 
+    # ── container.conf ────────────────────────────────────────────────
+    section "container.conf extra args"
+
+    # When container.conf has args, info subcommand stays quiet (no notice
+    # in info/check), but a normal --dry-run run prints the [info] notice.
+    mkdir -p "${CONFIG_DIR}"
+    cat >"${CONFIG_DIR}/container.conf" <<'EOF'
+--publish=3000:3000
+# comment line
+--env=FOO=bar
+EOF
+    cc_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" --dry-run --agent copilot 2>&1 || true)
+    if echo "$cc_out" | grep -q "applied 2 extra container args from"; then
+        pass "container.conf prints [info] applied N notice"
+    else
+        fail "container.conf prints [info] applied N notice" "got: $cc_out"
+    fi
+
+    cc_info=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1 || true)
+    if ! echo "$cc_info" | grep -q "applied .* extra container args"; then
+        pass "container.conf notice suppressed in info mode"
+    else
+        fail "container.conf notice suppressed in info mode" "got: $cc_info"
+    fi
+    rm -f "${CONFIG_DIR}/container.conf"
+
 fi # end $RUN_UNIT
 
 # ── Summary ──────────────────────────────────────────────────────────

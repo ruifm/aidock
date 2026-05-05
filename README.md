@@ -232,6 +232,8 @@ Add persistent Podman/Docker flags to `~/.config/aidock/container.conf` (one per
 --volume=/data:/data:ro
 ```
 
+aidock prints a one-line `[info] applied N extra container args from ...` notice on stderr when this file contributes any args (suppressed for `info` and `check`).
+
 ### Default agent
 
 If you almost always use the same agent, write its name to `~/.config/aidock/default-agent` to skip the picker:

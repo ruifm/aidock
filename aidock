@@ -1445,6 +1445,7 @@ esac
 
 CONTAINER_CONF="${CONFIG_DIR}/container.conf"
 if [[ -f "$CONTAINER_CONF" ]]; then
+    _conf_args_before=${#EXTRA_CONTAINER_ARGS[@]}
     while IFS= read -r line; do
         # Skip empty lines and comments
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
@@ -1452,6 +1453,10 @@ if [[ -f "$CONTAINER_CONF" ]]; then
         read -ra args <<<"$line"
         EXTRA_CONTAINER_ARGS+=("${args[@]}")
     done <"$CONTAINER_CONF"
+    _conf_args_added=$((${#EXTRA_CONTAINER_ARGS[@]} - _conf_args_before))
+    if ((_conf_args_added > 0)) && [[ "$RUN_MODE" != "info" && "$RUN_MODE" != "check" ]]; then
+        echo "[info] applied ${_conf_args_added} extra container args from ${CONTAINER_CONF}" >&2
+    fi
 fi
 
 # ── Run ──────────────────────────────────────────────────────────────
