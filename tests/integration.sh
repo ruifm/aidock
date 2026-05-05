@@ -982,6 +982,43 @@ EOF
         fail "__init-home guards required env vars" "got: $ih_out"
     fi
 
+    # ── Host config bind-mount checkhealth section ────────────────────
+    section "Host config bind-mount checkhealth section"
+
+    hcfg_tmp=$(mktemp -d)
+    mkdir -p "${hcfg_tmp}/.config/github-copilot"
+    touch "${hcfg_tmp}/.config/github-copilot/apps.json"
+    hcfg_ok=$(
+        AGENT=copilot AGENT_CONFIG_DIR=.config/github-copilot \
+            PROJECT_NAME="${PROJECT_NAME}" HOME="${hcfg_tmp}" \
+            "${LAUNCHER}" __checkhealth 2>&1 || true
+    )
+    if echo "$hcfg_ok" | grep -q "Host config bind mounts" &&
+        echo "$hcfg_ok" | grep -q "apps.json (mounted)"; then
+        pass "checkhealth pass when credential file present"
+    else
+        fail "checkhealth pass when credential file present" "got: $hcfg_ok"
+    fi
+    rm -rf "${hcfg_tmp}"
+
+    hcfg_tmp=$(mktemp -d)
+    hcfg_miss=$(
+        AGENT=claude AGENT_CONFIG_DIR=.claude \
+            PROJECT_NAME="${PROJECT_NAME}" HOME="${hcfg_tmp}" \
+            "${LAUNCHER}" __checkhealth 2>&1 || true
+    )
+    if echo "$hcfg_miss" | grep -q ".credentials.json not mounted (auth will fail"; then
+        pass "checkhealth fails when credential file missing"
+    else
+        fail "checkhealth fails when credential file missing" "got: $hcfg_miss"
+    fi
+    if echo "$hcfg_miss" | grep -q "settings.json not mounted (optional"; then
+        pass "checkhealth warns on missing optional file"
+    else
+        fail "checkhealth warns on missing optional file" "got: $hcfg_miss"
+    fi
+    rm -rf "${hcfg_tmp}"
+
     # ── container.conf ────────────────────────────────────────────────
     section "container.conf extra args"
 

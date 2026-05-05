@@ -163,7 +163,50 @@ cmd_checkhealth() {
             ;;
     esac
 
-    # ── Toolchains ───────────────────────────────────────────────────
+    # ── Host config bind mounts ──────────────────────────────────────
+    section "Host config bind mounts"
+    # Each entry: "<container-path>|<credential?>" — credential entries
+    # FAIL if missing, others WARN. Mirrors add_host_config_mount cases.
+    local mount_entries=()
+    case "$AGENT" in
+        copilot)
+            mount_entries=(
+                "${HOME}/.config/github-copilot/apps.json|cred"
+                "${HOME}/.config/github-copilot/versions.json|opt"
+                "${HOME}/.config/github-copilot/hosts.json|opt"
+                "${HOME}/.config/github-copilot/settings.json|opt"
+                "${HOME}/.config/github-copilot/skills|opt"
+            )
+            ;;
+        claude)
+            mount_entries=(
+                "${HOME}/.claude/.credentials.json|cred"
+                "${HOME}/.claude/settings.json|opt"
+                "${HOME}/.claude/CLAUDE.md|opt"
+            )
+            ;;
+        codex)
+            mount_entries=(
+                "${HOME}/.codex/auth.json|cred"
+                "${HOME}/.codex/config.toml|opt"
+                "${HOME}/.codex/AGENTS.md|opt"
+            )
+            ;;
+    esac
+    local entry path kind label
+    for entry in "${mount_entries[@]}"; do
+        path="${entry%|*}"
+        kind="${entry##*|}"
+        label="${path#"${HOME}/"}"
+        if [[ -e "$path" && -r "$path" ]]; then
+            pass "$label (mounted)"
+        elif [[ "$kind" == "cred" ]]; then
+            fail "$label not mounted (auth will fail; check host file exists)"
+        else
+            warn "$label not mounted (optional; create on host to use)"
+        fi
+    done
+
     section "Toolchains"
     if command -v node &>/dev/null; then pass "node $(node --version)"; else fail "node not found"; fi
     if command -v python3 &>/dev/null; then pass "python3 $(python3 --version 2>&1 | awk '{print $2}')"; else fail "python3 not found"; fi
