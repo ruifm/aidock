@@ -833,15 +833,16 @@ commit_on_exit="always"
 
 # Read default agent preference (file contains a single agent name)
 DEFAULT_AGENT_FILE="${CONFIG_DIR}/default-agent"
+AGENT=""
+AGENT_RESOLVED=false
 if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
     default_agent=$(<"$DEFAULT_AGENT_FILE")
     default_agent="${default_agent%%[[:space:]]}" # trim trailing whitespace
     default_agent="${default_agent##[[:space:]]}" # trim leading whitespace
     if [[ -n "$default_agent" ]]; then
         AGENT="$default_agent"
+        AGENT_RESOLVED=true
     fi
-else
-    AGENT="copilot"
 fi
 
 RUN_MODE="run"
@@ -875,7 +876,6 @@ validate_agent() {
 # Returns 0 if a credential is detectable (env var or allowlisted file),
 # non-zero otherwise. Does not validate the credential — invalid creds
 # fail naturally inside the container.
-# shellcheck disable=SC2329  # used in subsequent Phase H commits
 probe_agent_auth() {
     case "$1" in
         copilot)
@@ -901,7 +901,6 @@ probe_agent_auth() {
 }
 
 # One-liner setup hint shown when an agent is unconfigured.
-# shellcheck disable=SC2329  # used in subsequent Phase H commits
 agent_setup_hint() {
     case "$1" in
         copilot) echo "Run 'gh auth login' (then enable Copilot), or set GH_TOKEN." ;;
@@ -964,6 +963,7 @@ while [[ $# -gt 0 ]]; do
             validate_agent "$2"
             AGENT="$2"
             AGENT_EXPLICIT=true
+            AGENT_RESOLVED=true
             shift 2
             ;;
         -n | --dry-run)
@@ -1028,7 +1028,42 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate agent name (covers default-agent file and --agent flag)
-validate_agent "$AGENT"
+if [[ "$AGENT_RESOLVED" == "true" ]]; then
+    validate_agent "$AGENT"
+fi
+
+# ── Agent auth check (run/shell only) ────────────────────────────────
+# When the user has explicitly chosen an agent (via --agent or the
+# default-agent file), require host auth. shell mode is a debug escape
+# hatch — warn instead of dying.
+if [[ "$AGENT_RESOLVED" == "true" ]]; then
+    case "$RUN_MODE" in
+        run)
+            if ! probe_agent_auth "$AGENT"; then
+                {
+                    echo "error: agent '${AGENT}' is not configured on this host"
+                    echo "  $(agent_setup_hint "$AGENT")"
+                } >&2
+                exit 2
+            fi
+            ;;
+        shell)
+            if ! probe_agent_auth "$AGENT"; then
+                {
+                    echo "warning: agent '${AGENT}' has no host auth (shell mode continues anyway)"
+                    echo "  $(agent_setup_hint "$AGENT")"
+                } >&2
+            fi
+            ;;
+    esac
+fi
+
+# H3 will replace this fallback with a picker. For now, preserve
+# previous default-agent behavior so other Phase H commits stay isolated.
+if [[ "$AGENT_RESOLVED" != "true" ]]; then
+    AGENT="copilot"
+    validate_agent "$AGENT"
+fi
 
 # ── Resolve commit_on_exit policy (CLI flag wins over conf file) ────
 

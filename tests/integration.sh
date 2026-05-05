@@ -44,8 +44,10 @@ CONFIG_DIR="${XDG_CONFIG_HOME}/${PROJECT_NAME}"
 cleanup() { rm -rf "${TEST_TMPDIR}"; }
 trap cleanup EXIT
 
-# Provide a fake GH_TOKEN so launcher auth checks pass in the isolated env
+# Provide fake auth env vars so probe_agent_auth passes in the isolated env
 export GH_TOKEN="fake-token-for-test"
+export ANTHROPIC_API_KEY="fake-anthropic-key-for-test"
+export OPENAI_API_KEY="fake-openai-key-for-test"
 
 # ── Container engine setup (integration tests only) ──────────────────
 
@@ -689,6 +691,56 @@ if $RUN_UNIT; then
         pass "invalid default-agent file caught"
     else
         fail "invalid default-agent file caught" "got: $invalid_output"
+    fi
+
+    # ── Agent auth probe (Phase H) ──────────────────────────────────────
+
+    section "Agent auth probe"
+
+    # Explicit -a with no host auth dies with the agent's setup hint.
+    saved_anthropic="${ANTHROPIC_API_KEY:-}"
+    unset ANTHROPIC_API_KEY
+    no_auth_output=$(env -u ANTHROPIC_API_KEY HOME="${TEST_TMPDIR}" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent claude 2>&1 || true)
+    if echo "$no_auth_output" | grep -q "agent 'claude' is not configured"; then
+        pass "explicit -a without host auth dies (run mode)"
+    else
+        fail "explicit -a without host auth dies (run mode)" "got: $no_auth_output"
+    fi
+    if echo "$no_auth_output" | grep -q "ANTHROPIC_API_KEY"; then
+        pass "explicit -a without host auth shows setup hint"
+    else
+        fail "explicit -a without host auth shows setup hint" "got: $no_auth_output"
+    fi
+
+    # shell mode warns instead of dying.
+    shell_output=$(env -u ANTHROPIC_API_KEY HOME="${TEST_TMPDIR}" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" shell --dry-run --no-rebuild --agent claude 2>&1 || true)
+    if echo "$shell_output" | grep -q "warning: agent 'claude' has no host auth"; then
+        pass "shell mode warns when explicit agent unconfigured"
+    else
+        fail "shell mode warns when explicit agent unconfigured" "got: $shell_output"
+    fi
+    if echo "$shell_output" | grep -q "AGENT=claude"; then
+        pass "shell mode continues despite missing auth"
+    else
+        fail "shell mode continues despite missing auth" "got: $shell_output"
+    fi
+
+    # default-agent file unconfigured → also dies in run mode.
+    echo "claude" >"${CONFIG_DIR}/default-agent"
+    file_no_auth=$(env -u ANTHROPIC_API_KEY HOME="${TEST_TMPDIR}" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild 2>&1 || true)
+    rm -f "${CONFIG_DIR}/default-agent"
+    if echo "$file_no_auth" | grep -q "agent 'claude' is not configured"; then
+        pass "default-agent file with no auth dies"
+    else
+        fail "default-agent file with no auth dies" "got: $file_no_auth"
+    fi
+
+    # Restore env for subsequent tests.
+    if [[ -n "$saved_anthropic" ]]; then
+        export ANTHROPIC_API_KEY="$saved_anthropic"
     fi
 
     # ── Session image scheme ─────────────────────────────────────────────
