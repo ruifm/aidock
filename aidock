@@ -384,8 +384,11 @@ _record_session() {
 }
 
 # Acquire an exclusive flock on ${SESSION_DIR}/<hash>.lock so concurrent
-# invocations on the same CWD serialize. The lock is released
-# automatically when this process exits (kernel unwinds open fds).
+# invocations on the same CWD don't fight over the session image. On
+# contention we fail fast with a friendly error rather than waiting:
+# the second invocation almost always indicates user error (forgot a
+# session is already open) and silent waits hide that. The lock is
+# released automatically on exit (kernel unwinds the open fd).
 _acquire_session_lock() {
     if ! command -v flock >/dev/null 2>&1; then
         return 0
@@ -394,8 +397,12 @@ _acquire_session_lock() {
     local lockfile="${SESSION_DIR}/${SESSION_HASH}.lock"
     exec 9>"$lockfile"
     if ! flock -n 9; then
-        echo "Another aidock session is active in this CWD; waiting..." >&2
-        flock 9
+        {
+            echo "error: another aidock session is already running for this CWD"
+            echo "  lock: ${lockfile}"
+            echo "  exit the other session (or run a different agent in a different CWD) and try again"
+        } >&2
+        exit 2
     fi
 }
 
