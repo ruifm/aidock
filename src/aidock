@@ -152,7 +152,7 @@ get_defaults_dir() {
 
 get_defaults_dir || exit 1
 BUILD_DIR="${CONFIG_DIR}"
-mkdir -p "${BUILD_DIR}/agents"
+mkdir -p "${BUILD_DIR}"
 
 cp -arn "${_DEFAULTS_DIR}/." "${BUILD_DIR}/" 2>/dev/null || true
 
@@ -319,34 +319,18 @@ if [[ "$RUN_MODE" == "reset" ]]; then
         fi
         echo "Defaults will be re-seeded on next run."
     else
-        # Safe reset: overwrite only known files from defaults
+        # Safe reset: overwrite build files from defaults
         if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-            AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
-            default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
-            if [[ ! -d "$default_dir" ]]; then
-                die "no defaults found for agent '${AGENT}'"
-            fi
-            mkdir -p "$AGENT_DATA_DIR"
-            for src in "$default_dir"/*; do
-                [[ -f "$src" ]] || continue
-                cp -f "$src" "$AGENT_DATA_DIR/"
-            done
-            echo "Reset ${AGENT} config from defaults (session data preserved)."
-            echo "Config dir: ${AGENT_DATA_DIR}/"
-        else
-            # Re-seed build files from defaults
-            for name in Containerfile init-home.sh checkhealth.sh; do
-                src="${_DEFAULTS_DIR}/${name}"
-                [[ -f "$src" ]] && cp -f "$src" "${CONFIG_DIR}/"
-            done
-            if [[ -d "${_DEFAULTS_DIR}/agents" ]]; then
-                cp -rf "${_DEFAULTS_DIR}/agents" "${CONFIG_DIR}/"
-            fi
-            rm -f "${CONFIG_DIR}/.last-build"
-            echo "Reset build files from defaults (session data preserved)."
-            echo "Config dir: ${CONFIG_DIR}/"
-            echo "Rebuild will be triggered on next run."
+            die "reset --agent requires --purge (no agent defaults to restore)"
         fi
+        for name in Containerfile init-home.sh checkhealth.sh; do
+            src="${_DEFAULTS_DIR}/${name}"
+            [[ -f "$src" ]] && cp -f "$src" "${CONFIG_DIR}/"
+        done
+        rm -f "${CONFIG_DIR}/.last-build"
+        echo "Reset build files from defaults (session data preserved)."
+        echo "Config dir: ${CONFIG_DIR}/"
+        echo "Rebuild will be triggered on next run."
     fi
     exit 0
 fi
@@ -415,23 +399,19 @@ fi
 
 agent_cmd=()
 agent_config_dir=""
-agent_configs=()
 
 case "$AGENT" in
     copilot)
         agent_cmd=(copilot --autopilot --enable-all-github-mcp-tools --yolo --resume)
         agent_config_dir=".copilot"
-        agent_configs=(config.json lsp-config.json mcp-config.json)
         ;;
     claude)
         agent_cmd=(claude --continue --dangerously-skip-permissions --mcp-config "${CONTAINER_HOME}/.claude/mcp-config.json")
         agent_config_dir=".claude"
-        agent_configs=(settings.json mcp-config.json)
         ;;
     codex)
         agent_cmd=(codex --yolo)
         agent_config_dir=".codex"
-        agent_configs=(config.toml)
         ;;
     *)
         # Should not reach here — validate_agent() catches this
@@ -468,14 +448,6 @@ else
             break
         fi
     done
-    # Also rebuild if agent default configs changed
-    for cfg in "${agent_configs[@]}"; do
-        src="${BUILD_DIR}/agents/${AGENT}/${cfg}"
-        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
-            needs_build=true
-            break
-        fi
-    done
 fi
 
 FIRST_RUN=false
@@ -498,24 +470,14 @@ if git_root=$(git rev-parse --show-toplevel 2>/dev/null); then
     MOUNT_DIR="$git_root"
 fi
 
-# ── Agent config+state directory ─────────────────────────────────────
-
-AGENT_DATA_DIR="${CONFIG_DIR}/${AGENT}"
-if [[ ! -d "${AGENT_DATA_DIR}" ]]; then
-    FIRST_RUN=true
-fi
-mkdir -p "${AGENT_DATA_DIR}"
-
 if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
-    echo "First run for ${AGENT}. Config seeded at: ${AGENT_DATA_DIR}/"
-    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+    echo "First run. Containerfile: ${BUILD_DIR}/Containerfile"
     echo "Edit files to customize. Use 'reset' to restore defaults."
 fi
 
 # ── Assemble mounts ─────────────────────────────────────────────────
 
 mounts=(
-    -v "${AGENT_DATA_DIR}:${CONTAINER_HOME}/${agent_config_dir}/:rw"
     -v "${MOUNT_DIR}:${MOUNT_DIR}:rw"
 )
 
@@ -607,7 +569,6 @@ if [[ "${RUN_MODE}" == "info" ]]; then
         echo "Default agent: copilot (built-in default)"
     fi
     echo "Config dir:    ${CONFIG_DIR}/"
-    echo "Agent config:  ${CONFIG_DIR}/${AGENT}/"
     echo "Containerfile: ${BUILD_DIR}/Containerfile"
 
     # Show agent versions via a quick container run (if image exists)

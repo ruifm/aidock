@@ -551,32 +551,22 @@ if $RUN_UNIT; then
         fail "--no-cache rejected outside build" "expected error, got: $build_excl"
     fi
 
-    # reset -a on nonexistent agent dir creates it and seeds defaults
-    rm -rf "${CONFIG_DIR}/codex" # ensure clean state
-    reset_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --agent codex 2>&1)
-    if echo "$reset_output" | grep -qi "Reset codex config"; then
-        pass "reset creates and seeds missing agent dir"
-    else
-        fail "reset creates and seeds missing agent dir" "got: $reset_output"
-    fi
-
-    # reset -a on existing agent dir re-seeds config but preserves other files
-    reset_test_dir="${CONFIG_DIR}/codex"
-    mkdir -p "$reset_test_dir"
-    touch "$reset_test_dir/session-sentinel"
-    reset_reseed_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --agent codex 2>&1)
-    if [[ -f "$reset_test_dir/session-sentinel" ]] && echo "$reset_reseed_output" | grep -q "session data preserved"; then
-        pass "reset preserves session data"
-    else
-        fail "reset preserves session data" "sentinel missing or wrong output: $reset_reseed_output"
-    fi
-
     # reset --purge -a --force deletes agent dir entirely
+    mkdir -p "${CONFIG_DIR}/codex"
+    touch "${CONFIG_DIR}/codex/sentinel"
     reset_purge_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --purge --force --agent codex 2>&1)
-    if [[ ! -d "$reset_test_dir" ]] && echo "$reset_purge_output" | grep -q "Purged"; then
+    if [[ ! -d "${CONFIG_DIR}/codex" ]] && echo "$reset_purge_output" | grep -q "Purged"; then
         pass "reset --purge deletes agent dir"
     else
         fail "reset --purge deletes agent dir" "dir still exists or wrong output: $reset_purge_output"
+    fi
+
+    # reset --agent without --purge is rejected (no defaults to restore)
+    reset_noseed_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --agent codex 2>&1 || true)
+    if echo "$reset_noseed_output" | grep -q "requires --purge"; then
+        pass "reset --agent without --purge rejected"
+    else
+        fail "reset --agent without --purge rejected" "got: $reset_noseed_output"
     fi
 
     # --purge rejected outside reset
@@ -670,24 +660,14 @@ if $RUN_UNIT; then
 
     section "First-run message"
 
-    # First run for an agent that has no config dir should show message
-    first_run_dir="${CONFIG_DIR}/codex"
-    rm -rf "$first_run_dir"
-    first_run_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent codex 2>&1)
-    if echo "$first_run_output" | grep -q "First run for codex"; then
-        pass "first-run message shown for new agent"
-    else
-        fail "first-run message shown for new agent" "got: $first_run_output"
-    fi
-
-    # Subsequent run with existing dir should NOT show first-run message
-    mkdir -p "$first_run_dir"
+    # First-run message is tied to image build state, not per-agent dirs.
+    # When the image is already built and no source files changed, the
+    # first-run message must NOT appear.
     second_run_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent codex 2>&1)
-    rm -rf "$first_run_dir"
-    if ! echo "$second_run_output" | grep -q "First run for"; then
-        pass "no first-run message on subsequent run"
+    if ! echo "$second_run_output" | grep -q "First run"; then
+        pass "no first-run message when image is built"
     else
-        fail "no first-run message on subsequent run" "got: $second_run_output"
+        fail "no first-run message when image is built" "got: $second_run_output"
     fi
 
     # ── Containerfile seeding ────────────────────────────────────────────
@@ -706,13 +686,6 @@ if $RUN_UNIT; then
         pass "support files seeded to config dir"
     else
         fail "support files seeded to config dir" "init-home.sh or checkhealth.sh missing"
-    fi
-
-    # Agent default configs should be seeded
-    if [[ -d "${CONFIG_DIR}/agents/copilot" ]]; then
-        pass "agent defaults seeded to config dir"
-    else
-        fail "agent defaults seeded to config dir" "agents/copilot/ missing"
     fi
 
     # User edits to Containerfile should be preserved on re-run
@@ -743,10 +716,10 @@ if $RUN_UNIT; then
     fi
 
     # Build files should still exist (overwritten, not deleted)
-    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -d "${CONFIG_DIR}/agents" ]]; then
+    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -f "${CONFIG_DIR}/init-home.sh" ]]; then
         pass "build files present after reset"
     else
-        fail "build files present after reset" "Containerfile or agents/ missing"
+        fail "build files present after reset" "Containerfile or init-home.sh missing"
     fi
 
     # --info should show Containerfile path

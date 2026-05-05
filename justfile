@@ -55,7 +55,7 @@ bash_files := "src/aidock defaults/init-home.sh defaults/checkhealth.sh tests/in
 # Format all source files
 fmt:
     shfmt -w -i 4 -ci {{bash_files}}
-    prettier --write "**/*.json" "**/*.yml" "**/*.yaml"
+    prettier --write --no-error-on-unmatched-pattern "**/*.json" "**/*.yml" "**/*.yaml"
 
 # Lint all source files
 lint:

@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
-# init-home.sh: Seed agent config from baked-in defaults if not already present.
-# Used as ENTRYPOINT — runs before the AI agent starts.
-#
-# Config layering (per file, first match wins):
-#   1. User override at /etc/$PROJECT_NAME/overrides/$file (bind-mounted from host)
-#   2. Baked-in default at /etc/$PROJECT_NAME/agents/$AGENT/$file
+# init-home.sh: Per-container entrypoint. Ensures a writable home for the
+# current UID and links any host-mounted configs the agent expects.
 #
 # All env vars are set by aidock (required).
 
@@ -18,17 +14,8 @@ if [[ "$(id -u)" != "0" ]] && ! getent passwd "$(id -u)" &>/dev/null; then
 fi
 
 CONFIG_TARGET="${HOME}/${AGENT_CONFIG_DIR}"
-DEFAULTS_DIR="/etc/${PROJECT_NAME}/agents/${AGENT}"
 
 mkdir -p "${CONFIG_TARGET}"
-
-# Seed config from baked-in defaults (only if file doesn't already exist)
-if [[ -d "${DEFAULTS_DIR}" ]]; then
-    for default_file in "${DEFAULTS_DIR}"/*; do
-        [[ -f "$default_file" ]] || continue
-        cp -n "$default_file" "${CONFIG_TARGET}/$(basename "$default_file")"
-    done
-fi
 
 # Agent-specific post-assembly steps
 if [[ "$AGENT" == "copilot" ]]; then

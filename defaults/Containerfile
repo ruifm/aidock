@@ -98,9 +98,6 @@ RUN npm install -g \
         @openai/codex \
     && npm cache clean --force
 
-# ── Baked-in agent configs (defaults) ────────────────────────────────
-COPY agents/ /etc/${PROJECT_NAME}/agents/
-
 # ── Entrypoint & healthcheck ──────────────────────────────────────────
 COPY --chmod=755 init-home.sh /usr/local/bin/init-home.sh
 COPY --chmod=755 checkhealth.sh /usr/local/bin/checkhealth.sh
