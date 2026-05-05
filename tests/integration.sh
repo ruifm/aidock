@@ -843,6 +843,40 @@ if $RUN_UNIT; then
         fail "--session rejected outside reset" "got: $rs_outside"
     fi
 
+    # ── update-agents ────────────────────────────────────────────────────
+
+    section "update-agents"
+
+    # No image present → dry-run reports the build-first hint.
+    ua_no_image=$(timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+    if echo "$ua_no_image" | grep -q "would fall through to 'aidock build'"; then
+        pass "update-agents dry-run reports build-first when no image"
+    else
+        fail "update-agents dry-run reports build-first when no image" "got: $ua_no_image"
+    fi
+
+    # Fake a base image so dry-run shows the update plan.
+    fake_base="${CONFIG_DIR}/.fake-image-${RANDOM}"
+    mkdir -p "$fake_base"
+    cat >"${fake_base}/engine" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+    image) [[ "\$2" == "inspect" && "\$3" == "${PROJECT_NAME}-base" ]] && exit 0 || exit 1 ;;
+esac
+exit 1
+EOF
+    chmod +x "${fake_base}/engine"
+    ua_dry=$(CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+    if echo "$ua_dry" | grep -q "target image: ${PROJECT_NAME}-base" &&
+        echo "$ua_dry" | grep -q "npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex" &&
+        echo "$ua_dry" | grep -q "Would run.*commit.*${PROJECT_NAME}-session-"; then
+        pass "update-agents dry-run plan against base image"
+    else
+        fail "update-agents dry-run plan against base image" "got: $ua_dry"
+    fi
+    rm -rf "$fake_base"
+
     # ── First-run message ────────────────────────────────────────────────
 
     section "First-run message"

@@ -23,6 +23,7 @@ Commands:
   run            Launch agent in container (default if omitted)
   build          Build the container image
   update         Pull latest base image and rebuild everything
+  update-agents  Reinstall AI agents inside this CWD's session image
   clean          Remove image, config, and dangling layers
   shell          Open a debug shell in container
   check          Run container healthcheck
@@ -361,7 +362,7 @@ validate_agent() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update clean shell check info reset list-sessions"
+readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset list-sessions"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -661,6 +662,58 @@ if [[ "$RUN_MODE" == "clean" ]]; then
         "$ENGINE" image prune -f >/dev/null 2>&1
         echo "Done."
     fi
+    exit 0
+fi
+
+# ── Handle update-agents (early exit) ──────────────────────────────
+# Reinstalls AI agents inside the current CWD's active image (session if
+# present, else base) and commits the result as the session image. Lets
+# users force-pull latest agent versions without rebuilding the base.
+
+if [[ "$RUN_MODE" == "update-agents" ]]; then
+    if engine_image_exists "${SESSION_IMAGE_NAME}"; then
+        target_image="${SESSION_IMAGE_NAME}"
+    elif engine_image_exists "${BASE_IMAGE_NAME}"; then
+        target_image="${BASE_IMAGE_NAME}"
+    else
+        target_image=""
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ -z "$target_image" ]]; then
+            echo "[dry-run] No image present; would fall through to 'aidock build'."
+            exit 0
+        fi
+        echo "[dry-run] target image: ${target_image}"
+        echo "[dry-run] Would run: $ENGINE run --name ${CONTAINER_NAME} --entrypoint sh ${target_image} -c 'npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex && npm cache clean --force'"
+        echo "[dry-run] Would run: $ENGINE commit ${CONTAINER_NAME} ${SESSION_IMAGE_NAME}"
+        echo "[dry-run] Would run: $ENGINE rm -f ${CONTAINER_NAME}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+        exit 0
+    fi
+
+    if [[ -z "$target_image" ]]; then
+        die "no image present; run 'aidock build' first"
+    fi
+
+    _record_session
+    _acquire_session_lock
+
+    echo "Updating agents in ${target_image}..."
+    rc=0
+    "$ENGINE" run --name "${CONTAINER_NAME}" --entrypoint sh "${target_image}" -c \
+        'npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex && npm cache clean --force' || rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        "$ENGINE" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+        die "agent update failed (npm install exited ${rc})"
+    fi
+
+    echo "Committing to ${SESSION_IMAGE_NAME}..."
+    "$ENGINE" commit "${CONTAINER_NAME}" "${SESSION_IMAGE_NAME}" >/dev/null
+    "$ENGINE" image prune -f >/dev/null 2>&1 || true
+    "$ENGINE" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    echo "Done."
     exit 0
 fi
 
