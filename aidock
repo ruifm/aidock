@@ -2,12 +2,11 @@
 # aidock: Launch an AI coding agent inside a container (podman or docker).
 # This file is the distributed launcher: copy it onto your PATH (e.g. via
 # `just install`) and run it directly. There is no dist/build step.
-# PROJECT_NAME: from env (justfile exports it), else derived from argv[0] basename.
-# This means a symlink named "my-agent" will use "my-agent" as the project name.
+# PROJECT_NAME defaults to "aidock" but can be overridden by env (e.g. tests).
 
 set -euo pipefail
 
-: "${PROJECT_NAME:=$(basename "$0")}"
+: "${PROJECT_NAME:=aidock}"
 
 # ── Hidden subcommands (run inside the container) ────────────────────
 # Container entrypoint and healthcheck. These are dispatched *before* any

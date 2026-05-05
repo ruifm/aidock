@@ -28,7 +28,7 @@ aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Co
 
 ## Architecture notes
 
-- **Project name SSOT**: defined once in the justfile as `PROJECT_NAME`, flows via env vars to all components.
+- **Project name SSOT**: hardcoded default `aidock` inside the launcher, overridable via the `PROJECT_NAME` env var (the justfile exports it for tests).
 - **Config seeding**: on first run, defaults are extracted to `~/.config/aidock/` via `cp -n`. User edits are preserved.
 - **Rebuild detection**: timestamp-based comparison of config files against a `.last-build` marker.
 - **User namespace mapping**: Podman uses `--userns=keep-id`; Docker uses `--user` with dynamic passwd entry.
