@@ -142,12 +142,38 @@ engine_run_committing() {
         cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
         echo "$cmd"
         echo "[dry-run] commit_on_exit=${COMMIT_POLICY} (would commit non-empty diff to ${SESSION_IMAGE_NAME})"
+        echo "[dry-run] session_lock=${SESSION_DIR}/${SESSION_HASH}.lock"
         exit 0
     fi
+    _record_session
+    _acquire_session_lock
     local rc=0
     "$ENGINE" run "${userns_flag[@]}" "$@" || rc=$?
     _maybe_commit_container "$CONTAINER_NAME" "$rc"
     exit "$rc"
+}
+
+# Persist hash -> CWD mapping so list-sessions and reset --session can
+# show meaningful names. Cheap (a tiny file write).
+_record_session() {
+    mkdir -p "$SESSION_DIR"
+    printf '%s\n' "$MOUNT_DIR" >"${SESSION_DIR}/${SESSION_HASH}"
+}
+
+# Acquire an exclusive flock on ${SESSION_DIR}/<hash>.lock so concurrent
+# invocations on the same CWD serialize. The lock is released
+# automatically when this process exits (kernel unwinds open fds).
+_acquire_session_lock() {
+    if ! command -v flock >/dev/null 2>&1; then
+        return 0
+    fi
+    mkdir -p "$SESSION_DIR"
+    local lockfile="${SESSION_DIR}/${SESSION_HASH}.lock"
+    exec 9>"$lockfile"
+    if ! flock -n 9; then
+        echo "Another aidock session is active in this CWD; waiting..." >&2
+        flock 9
+    fi
 }
 
 # Inspect $1 (container name) for filesystem changes, and depending on

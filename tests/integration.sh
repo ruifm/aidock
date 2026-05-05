@@ -545,6 +545,13 @@ if $RUN_UNIT; then
         fail "run --dry-run shows commit policy hint" "got: $dry_output"
     fi
 
+    # run dry-run shows the per-session lockfile path
+    if echo "$dry_output" | grep -q 'session_lock=.*sessions/[0-9a-f]\+\.lock'; then
+        pass "run --dry-run shows session lock path"
+    else
+        fail "run --dry-run shows session lock path" "got: $dry_output"
+    fi
+
     # check dry-run keeps --rm (ephemeral, no commit)
     check_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" check --dry-run --no-rebuild 2>&1 || true)
     if echo "$check_dry" | grep -q -- '--rm'; then
