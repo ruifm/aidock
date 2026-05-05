@@ -578,13 +578,22 @@ if $RUN_UNIT; then
         fail "picker skipped when --agent is explicit" "got: $explicit_skip"
     fi
 
-    # Picker is skipped in shell mode (legacy fallback).
-    shell_skip=$(timeout "${TIMEOUT}" "${LAUNCHER}" shell --dry-run --no-rebuild </dev/null 2>&1 || true)
-    if echo "$shell_skip" | grep -q "AGENT=copilot" &&
-        ! echo "$shell_skip" | grep -q "multiple agents configured"; then
-        pass "picker skipped in shell mode"
+    # Picker also runs in shell mode (consistent with run mode).
+    shell_no_tty=$(timeout "${TIMEOUT}" "${LAUNCHER}" shell --dry-run --no-rebuild </dev/null 2>&1 || true)
+    if echo "$shell_no_tty" | grep -q "multiple agents configured" &&
+        echo "$shell_no_tty" | grep -q "no TTY"; then
+        pass "picker dies on multi-configured + non-TTY in shell mode"
     else
-        fail "picker skipped in shell mode" "got: $shell_skip"
+        fail "picker dies on multi-configured + non-TTY in shell mode" "got: $shell_no_tty"
+    fi
+
+    # Explicit --agent skips the picker in shell mode too.
+    shell_explicit=$(timeout "${TIMEOUT}" "${LAUNCHER}" shell --dry-run --no-rebuild --agent codex </dev/null 2>&1 || true)
+    if echo "$shell_explicit" | grep -q "AGENT=codex" &&
+        ! echo "$shell_explicit" | grep -q "multiple agents configured"; then
+        pass "picker skipped in shell mode when --agent is explicit"
+    else
+        fail "picker skipped in shell mode when --agent is explicit" "got: $shell_explicit"
     fi
 
     # ── Session image scheme ─────────────────────────────────────────────

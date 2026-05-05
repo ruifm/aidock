@@ -920,7 +920,7 @@ agent_picker_run() {
     esac
 }
 
-if [[ "$AGENT_RESOLVED" != "true" && "$RUN_MODE" == "run" ]]; then
+if [[ "$AGENT_RESOLVED" != "true" && ("$RUN_MODE" == "run" || "$RUN_MODE" == "shell") ]]; then
     agent_picker_run
 fi
 
@@ -951,8 +951,9 @@ if [[ "$AGENT_RESOLVED" == "true" ]]; then
     esac
 fi
 
-# Legacy fallback for non-run modes (shell/info/check) without explicit
-# selection: pick copilot so the agent dispatch case has a value.
+# Legacy fallback for info/check without explicit selection: pick copilot
+# so the agent dispatch case has a value (run/shell go through the picker
+# above so AGENT_RESOLVED is true by the time we get here in those modes).
 if [[ "$AGENT_RESOLVED" != "true" ]]; then
     AGENT="copilot"
     validate_agent "$AGENT"
