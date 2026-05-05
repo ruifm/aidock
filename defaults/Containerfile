@@ -29,7 +29,7 @@ RUN dnf install -y \
         ShellCheck just sudo \
     && dnf clean all
 
-# ── LSPs and MCP servers via npm ─────────────────────────────────────
+# ── LSPs, MCP servers, AI agents, and formatters via npm ─────────────
 RUN npm install -g \
         typescript \
         typescript-language-server \
@@ -41,14 +41,15 @@ RUN npm install -g \
         @modelcontextprotocol/server-sequential-thinking \
         @playwright/mcp \
         firecrawl-mcp \
+        prettier \
+        @github/copilot \
+        @anthropic-ai/claude-code \
+        @openai/codex \
     && npm cache clean --force
 
 # ── Python packages (LSP and formatters) ─────────────────────────────
 RUN pip install --break-system-packages \
         basedpyright ruff
-
-# ── Formatters ────────────────────────────────────────────────────────
-RUN npm install -g prettier
 
 # ── Git identity for container sessions ──────────────────────────────
 RUN printf '[user]\n\tname = AI Coding Agent\n\temail = noreply@github.com\n' \
@@ -62,13 +63,6 @@ RUN chmod 666 /etc/passwd /etc/group
 # Under Podman (--userns=keep-id:uid=0), the agent is already root so sudo is unnecessary.
 RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent
 ENV HOME="/home/${PROJECT_NAME}"
-
-# ── AI coding agents ──────────────────────────────────────────────────
-RUN npm install -g \
-        @github/copilot \
-        @anthropic-ai/claude-code \
-        @openai/codex \
-    && npm cache clean --force
 
 # ── Entrypoint & healthcheck ──────────────────────────────────────────
 COPY --chmod=755 init-home.sh /usr/local/bin/init-home.sh
