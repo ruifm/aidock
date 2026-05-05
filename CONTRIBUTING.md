@@ -15,18 +15,23 @@ Clone the repo and make sure you have these on your host:
 
 ## Development workflow
 
-The dev source is `src/aidock`. Never edit `./aidock` directly — it's a generated distributable.
+The launcher is `src/aidock`. There is no separate generated distributable — `src/aidock` is what users install (e.g. via `just install`).
 
 ```bash
-# Format, lint, rebuild dist, run unit tests (the full CI gate)
+# Format, lint, run unit tests (the full CI gate)
 just check
 
 # Individual steps
 just fmt         # format all source files
-just lint        # lint Bash, YAML, Containerfile, JSON
-just dist        # regenerate ./aidock from src/aidock + defaults/
+just lint        # lint Bash, YAML, JSON, and the inlined Containerfile
 just test-unit   # run unit tests (no container needed)
 just test        # build image + run full integration tests
+```
+
+The default Containerfile / init-home.sh / checkhealth.sh are inlined as quoted heredocs inside `src/aidock` (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`) and seeded to `~/.config/aidock/` on first run. To inspect or lint one:
+
+```bash
+src/aidock --emit-default Containerfile | hadolint -
 ```
 
 ## Code style
@@ -51,7 +56,7 @@ Each commit should pass `just check`. Use `just install-hooks` to set up the pre
 ## Pull requests
 
 1. Fork the repo and create a branch from `master`.
-2. Make your changes in `src/aidock` (not `./aidock`).
+2. Make your changes in `src/aidock`.
 3. Run `just check` — all tests must pass.
 4. Open a PR with a clear description of what changed and why.
 
