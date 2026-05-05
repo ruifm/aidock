@@ -1032,10 +1032,99 @@ if [[ "$AGENT_RESOLVED" == "true" ]]; then
     validate_agent "$AGENT"
 fi
 
+# ── Agent picker (run mode only, when no explicit choice) ────────────
+# When the user hasn't picked an agent and we're entering run mode, drive
+# selection from host auth: 0 configured → die, 1 → autopick, 2+ → TTY
+# picker. shell/info/check fall through to the legacy copilot fallback
+# below.
+# shellcheck disable=SC2329  # not currently invoked, but defined for future use
+agent_picker_run() {
+    local configured=()
+    local agent
+    for agent in $AVAILABLE_AGENTS; do
+        if probe_agent_auth "$agent"; then
+            configured+=("$agent")
+        fi
+    done
+
+    case "${#configured[@]}" in
+        0)
+            {
+                echo "error: no agent is configured on this host"
+                echo "configure at least one of:"
+                for agent in $AVAILABLE_AGENTS; do
+                    echo "  - ${agent}: $(agent_setup_hint "$agent")"
+                done
+            } >&2
+            exit 2
+            ;;
+        1)
+            AGENT="${configured[0]}"
+            AGENT_RESOLVED=true
+            echo "[info] autoselected agent: ${AGENT} (only configured agent on host)" >&2
+            ;;
+        *)
+            if [[ ! -t 0 ]]; then
+                {
+                    echo "error: multiple agents configured on this host but no TTY for picker"
+                    echo "  set -a <agent>, write a name to ~/.config/aidock/default-agent, or run with a TTY"
+                    echo "configured agents: ${configured[*]}"
+                } >&2
+                exit 2
+            fi
+            {
+                echo "Multiple agents configured on this host. Pick one:"
+                echo
+                local i=1
+                for agent in "${configured[@]}"; do
+                    echo "  ${i}) ${agent}"
+                    i=$((i + 1))
+                done
+                local unconfigured=()
+                for agent in $AVAILABLE_AGENTS; do
+                    local found=false
+                    local c
+                    for c in "${configured[@]}"; do
+                        [[ "$c" == "$agent" ]] && {
+                            found=true
+                            break
+                        }
+                    done
+                    [[ "$found" == "false" ]] && unconfigured+=("$agent")
+                done
+                if ((${#unconfigured[@]} > 0)); then
+                    echo
+                    echo "Not configured (set up auth on the host to enable):"
+                    for agent in "${unconfigured[@]}"; do
+                        echo "  - ${agent}: $(agent_setup_hint "$agent")"
+                    done
+                fi
+                echo
+            } >&2
+            local choice
+            while true; do
+                read -r -p "Agent [1]: " choice </dev/tty
+                [[ -z "$choice" ]] && choice=1
+                if [[ "$choice" =~ ^[0-9]+$ ]] && ((choice >= 1 && choice <= ${#configured[@]})); then
+                    AGENT="${configured[$((choice - 1))]}"
+                    AGENT_RESOLVED=true
+                    break
+                fi
+                echo "  invalid choice; enter 1-${#configured[@]}" >&2
+            done
+            ;;
+    esac
+}
+
+if [[ "$AGENT_RESOLVED" != "true" && "$RUN_MODE" == "run" ]]; then
+    agent_picker_run
+fi
+
 # ── Agent auth check (run/shell only) ────────────────────────────────
 # When the user has explicitly chosen an agent (via --agent or the
 # default-agent file), require host auth. shell mode is a debug escape
-# hatch — warn instead of dying.
+# hatch — warn instead of dying. The picker above guarantees a configured
+# agent in run mode, so this is a no-op in that path.
 if [[ "$AGENT_RESOLVED" == "true" ]]; then
     case "$RUN_MODE" in
         run)
@@ -1058,8 +1147,8 @@ if [[ "$AGENT_RESOLVED" == "true" ]]; then
     esac
 fi
 
-# H3 will replace this fallback with a picker. For now, preserve
-# previous default-agent behavior so other Phase H commits stay isolated.
+# Legacy fallback for non-run modes (shell/info/check) without explicit
+# selection: pick copilot so the agent dispatch case has a value.
 if [[ "$AGENT_RESOLVED" != "true" ]]; then
     AGENT="copilot"
     validate_agent "$AGENT"

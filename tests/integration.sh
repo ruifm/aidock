@@ -519,7 +519,7 @@ if $RUN_UNIT; then
     fi
 
     # --dry-run prints command without executing
-    dry_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild 2>&1)
+    dry_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent copilot 2>&1)
     if echo "$dry_output" | grep -q "$ENGINE.*run.*${IMAGE_NAME}"; then
         pass "run --dry-run prints container command"
     else
@@ -743,6 +743,69 @@ if $RUN_UNIT; then
         export ANTHROPIC_API_KEY="$saved_anthropic"
     fi
 
+    # ── Agent picker (Phase H) ──────────────────────────────────────────
+
+    section "Agent picker"
+
+    # Zero configured: run mode dies with all hints listed.
+    zero_output=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild </dev/null 2>&1 || true)
+    if echo "$zero_output" | grep -q "no agent is configured"; then
+        pass "picker dies when zero agents configured"
+    else
+        fail "picker dies when zero agents configured" "got: $zero_output"
+    fi
+    if echo "$zero_output" | grep -q "copilot:" &&
+        echo "$zero_output" | grep -q "claude:" &&
+        echo "$zero_output" | grep -q "codex:"; then
+        pass "picker lists all three setup hints when none configured"
+    else
+        fail "picker lists all three setup hints when none configured" "got: $zero_output"
+    fi
+
+    # One configured: autopick + info message.
+    one_output=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild </dev/null 2>&1 || true)
+    if echo "$one_output" | grep -q "autoselected agent: copilot"; then
+        pass "picker autopicks the only configured agent"
+    else
+        fail "picker autopicks the only configured agent" "got: $one_output"
+    fi
+    if echo "$one_output" | grep -q "AGENT=copilot"; then
+        pass "autopicked agent is used for the run"
+    else
+        fail "autopicked agent is used for the run" "got: $one_output"
+    fi
+
+    # 2+ configured, no TTY: dies with hint pointing at -a / default-agent.
+    multi_no_tty=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild </dev/null 2>&1 || true)
+    if echo "$multi_no_tty" | grep -q "multiple agents configured" &&
+        echo "$multi_no_tty" | grep -q "no TTY"; then
+        pass "picker dies on multi-configured + non-TTY"
+    else
+        fail "picker dies on multi-configured + non-TTY" "got: $multi_no_tty"
+    fi
+
+    # Picker is skipped when --agent is explicit, even with multiple configured.
+    explicit_skip=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent codex </dev/null 2>&1 || true)
+    if echo "$explicit_skip" | grep -q "AGENT=codex" &&
+        ! echo "$explicit_skip" | grep -q "multiple agents configured"; then
+        pass "picker skipped when --agent is explicit"
+    else
+        fail "picker skipped when --agent is explicit" "got: $explicit_skip"
+    fi
+
+    # Picker is skipped in shell mode (legacy fallback).
+    shell_skip=$(timeout "${TIMEOUT}" "${LAUNCHER}" shell --dry-run --no-rebuild </dev/null 2>&1 || true)
+    if echo "$shell_skip" | grep -q "AGENT=copilot" &&
+        ! echo "$shell_skip" | grep -q "multiple agents configured"; then
+        pass "picker skipped in shell mode"
+    else
+        fail "picker skipped in shell mode" "got: $shell_skip"
+    fi
+
     # ── Session image scheme ─────────────────────────────────────────────
 
     section "Session image scheme"
@@ -794,7 +857,7 @@ if $RUN_UNIT; then
     fi
 
     # CLI override (--commit=prompt) wins over conf
-    info_override=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --commit=prompt 2>&1 || true)
+    info_override=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent copilot --commit=prompt 2>&1 || true)
     # info doesn't accept --commit, so use run --dry-run; we just need to verify
     # the parser accepts the flag without error
     if echo "$info_override" | grep -qE "(Would run|aidock-)"; then
