@@ -1210,8 +1210,9 @@ if [[ "$RUN_MODE" == "update-agents" ]]; then
 
     if [[ "$DRY_RUN" == "true" ]]; then
         if [[ -z "$target_image" ]]; then
-            echo "[dry-run] No image present; would fall through to 'aidock build'."
-            exit 0
+            echo "[dry-run] No base image present; would build first, then update agents."
+            echo "[dry-run] Would run: $ENGINE build --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+            target_image="${BASE_IMAGE_NAME}"
         fi
         echo "[dry-run] target image: ${target_image}"
         echo "[dry-run] configured agents: ${update_agents_list[*]}"
@@ -1223,7 +1224,12 @@ if [[ "$RUN_MODE" == "update-agents" ]]; then
     fi
 
     if [[ -z "$target_image" ]]; then
-        die "no image present; run 'aidock build' first"
+        echo "[info] no base image yet; building first..."
+        echo "Building ${BASE_IMAGE_NAME} image..."
+        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+        touch "${BUILD_DIR}/.last-build"
+        target_image="${BASE_IMAGE_NAME}"
     fi
 
     _record_session

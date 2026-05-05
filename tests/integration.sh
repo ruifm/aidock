@@ -764,7 +764,7 @@ EOF
     chmod +x "${fake_no_image}/engine"
     ua_no_image=$(CONTAINER_ENGINE="${fake_no_image}/engine" PATH="${fake_no_image}:$PATH" \
         timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
-    if echo "$ua_no_image" | grep -q "would fall through to 'aidock build'"; then
+    if echo "$ua_no_image" | grep -q "would build first" && echo "$ua_no_image" | grep -q "Would run: .* build .*${PROJECT_NAME}-base"; then
         pass "update-agents dry-run reports build-first when no image"
     else
         fail "update-agents dry-run reports build-first when no image" "got: $ua_no_image"
