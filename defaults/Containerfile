@@ -91,9 +91,7 @@ RUN chmod 666 /etc/passwd /etc/group
 RUN echo "ALL ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/agent
 ENV HOME="/home/${PROJECT_NAME}"
 
-# ── AI coding agents (separate layer for fast updates) ────────────────
-# Use 'aidock update-agents' to rebuild only this layer.
-ARG AGENT_CACHE_BUST=1
+# ── AI coding agents ──────────────────────────────────────────────────
 RUN npm install -g \
         @github/copilot \
         @anthropic-ai/claude-code \
