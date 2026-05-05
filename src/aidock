@@ -855,7 +855,7 @@ FORCE=false
 RESET_SESSION=false
 COMMIT_POLICY_OVERRIDE=""
 
-readonly VERSION="0.1.0"
+readonly VERSION="0.2.0"
 
 die() {
     echo "error: $*" >&2
