@@ -283,7 +283,7 @@ Commands:
   run            Launch agent in container (default if omitted)
   build          Build the container image
   update         Pull latest base image and rebuild everything
-  update-agents  Reinstall AI agents inside this CWD's session image
+  update-agents  Reinstall AI agents in the shared agents volume (global)
   clean          Remove image, config, and dangling layers
   shell          Open a debug shell in container
   check          Run container healthcheck
@@ -524,6 +524,7 @@ _agent_npm_pkg() {
 # picker will already have errored out before reaching a launch path,
 # but `aidock build` runs without picker-gating, so we tolerate empty.
 _seed_agents_volume() {
+    local verb="${1:-Seeding}"
     local pkgs=()
     local a
     while IFS= read -r a; do
@@ -549,7 +550,7 @@ _seed_agents_volume() {
     engine_volume_create "$AGENTS_VOLUME"
     _acquire_agents_volume_lock
 
-    echo "Seeding ${AGENTS_VOLUME} with: ${pkgs[*]}"
+    echo "${verb} ${AGENTS_VOLUME} with: ${pkgs[*]}"
     local userns_flag=()
     if [[ "$ENGINE" == "podman" ]]; then
         # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
@@ -1421,31 +1422,15 @@ if [[ "$RUN_MODE" == "clean" ]]; then
 fi
 
 # ── Handle update-agents (early exit) ──────────────────────────────
-# Reinstalls AI agents inside the current CWD's active image (session if
-# present, else base) and commits the result as the session image. Lets
-# users force-pull latest agent versions without rebuilding the base.
+# Refreshes the AI agent CLIs in the shared agents volume. Global across
+# all per-CWD sessions: every aidock run mounts the same volume.
 
 if [[ "$RUN_MODE" == "update-agents" ]]; then
-    if engine_image_exists "${SESSION_IMAGE_NAME}"; then
-        target_image="${SESSION_IMAGE_NAME}"
-    elif engine_image_exists "${BASE_IMAGE_NAME}"; then
-        target_image="${BASE_IMAGE_NAME}"
-    else
-        target_image=""
-    fi
-
-    # Build the npm install argument list from configured agents only.
-    # Avoids pulling unused agents into the per-CWD session image on every
-    # refresh.
-    declare -A _agent_pkg=(
-        [copilot]="@github/copilot"
-        [claude]="@anthropic-ai/claude-code"
-        [codex]="@openai/codex"
-    )
     update_pkgs=()
     update_agents_list=()
     while IFS= read -r _agent; do
-        update_pkgs+=("${_agent_pkg[$_agent]}")
+        [[ -n "$_agent" ]] || continue
+        update_pkgs+=("$(_agent_npm_pkg "$_agent")")
         update_agents_list+=("$_agent")
     done < <(list_configured_agents)
 
@@ -1460,49 +1445,30 @@ if [[ "$RUN_MODE" == "update-agents" ]]; then
         exit 2
     fi
 
-    update_cmd="npm install -g ${update_pkgs[*]} && npm cache clean --force"
-
     if [[ "$DRY_RUN" == "true" ]]; then
-        if [[ -z "$target_image" ]]; then
-            echo "[dry-run] No base image present; would build first, then update agents."
+        if ! engine_image_exists "${BASE_IMAGE_NAME}"; then
+            echo "[dry-run] No base image present; would build first."
             echo "[dry-run] Would run: $ENGINE build --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
-            target_image="${BASE_IMAGE_NAME}"
         fi
-        echo "[dry-run] target image: ${target_image}"
         echo "[dry-run] configured agents: ${update_agents_list[*]}"
-        echo "[dry-run] Would run: $ENGINE run --name ${CONTAINER_NAME} --entrypoint sh ${target_image} -c '${update_cmd}'"
-        echo "[dry-run] Would run: $ENGINE commit ${CONTAINER_NAME} ${SESSION_IMAGE_NAME}"
-        echo "[dry-run] Would run: $ENGINE rm -f ${CONTAINER_NAME}"
-        echo "[dry-run] Would run: $ENGINE image prune -f"
+        echo "[dry-run] Would update ${AGENTS_VOLUME}: npm install -g ${update_pkgs[*]}"
         exit 0
     fi
 
-    if [[ -z "$target_image" ]]; then
+    if ! engine_image_exists "${BASE_IMAGE_NAME}"; then
         echo "[info] no base image yet; building first..."
         echo "Building ${BASE_IMAGE_NAME} image..."
         engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
             -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
-        target_image="${BASE_IMAGE_NAME}"
+        # The build's seed step (below) will install the same agents we
+        # were about to update, so we're done after one round.
+        _seed_agents_volume
+        echo "Done."
+        exit 0
     fi
 
-    _record_session
-    _acquire_session_lock
-
-    echo "Updating agents (${update_agents_list[*]}) in ${target_image}..."
-    rc=0
-    "$ENGINE" run --name "${CONTAINER_NAME}" --entrypoint sh "${target_image}" -c \
-        "$update_cmd" || rc=$?
-
-    if [[ $rc -ne 0 ]]; then
-        "$ENGINE" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
-        die "agent update failed (npm install exited ${rc})"
-    fi
-
-    echo "Committing to ${SESSION_IMAGE_NAME}..."
-    "$ENGINE" commit "${CONTAINER_NAME}" "${SESSION_IMAGE_NAME}" >/dev/null
-    "$ENGINE" image prune -f >/dev/null 2>&1 || true
-    "$ENGINE" rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
+    _seed_agents_volume "Updating"
     echo "Done."
     exit 0
 fi

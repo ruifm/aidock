@@ -821,12 +821,11 @@ EOF
     chmod +x "${fake_base}/engine"
     ua_dry=$(CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
         timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
-    if echo "$ua_dry" | grep -q "target image: ${PROJECT_NAME}-base" &&
-        echo "$ua_dry" | grep -q "npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex" &&
-        echo "$ua_dry" | grep -q "Would run.*commit.*${PROJECT_NAME}-session-"; then
-        pass "update-agents dry-run plan against base image"
+    if echo "$ua_dry" | grep -q "configured agents: copilot claude codex" &&
+        echo "$ua_dry" | grep -q "Would update ${PROJECT_NAME}-agents: npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex"; then
+        pass "update-agents dry-run plan against shared volume"
     else
-        fail "update-agents dry-run plan against base image" "got: $ua_dry"
+        fail "update-agents dry-run plan against shared volume" "got: $ua_dry"
     fi
 
     # Filter: only configured agents are reinstalled.
@@ -835,7 +834,7 @@ EOF
         CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
         timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
     if echo "$ua_filtered" | grep -q "configured agents: copilot$" &&
-        echo "$ua_filtered" | grep -q "npm install -g @github/copilot &&" &&
+        echo "$ua_filtered" | grep -q "Would update ${PROJECT_NAME}-agents: npm install -g @github/copilot$" &&
         ! echo "$ua_filtered" | grep -q "@anthropic-ai/claude-code" &&
         ! echo "$ua_filtered" | grep -q "@openai/codex"; then
         pass "update-agents reinstalls only configured agents"
