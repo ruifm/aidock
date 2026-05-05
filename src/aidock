@@ -123,10 +123,27 @@ engine_run() {
 
 # ── Derived paths ────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-readonly IMAGE_NAME="${PROJECT_NAME}"
+readonly BASE_IMAGE_NAME="${PROJECT_NAME}-base"
 readonly CONTAINER_NAME="${PROJECT_NAME}-$$"
 readonly CONTAINER_HOME="/home/${PROJECT_NAME}"
 readonly CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/${PROJECT_NAME}"
+readonly SESSION_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/${PROJECT_NAME}/sessions"
+
+# ── Session identity ────────────────────────────────────────────────
+# Each working directory gets its own committed image. The hash is
+# derived from the realpath of the project root so all agents on a CWD
+# share state, and a CWD's identity survives symlink resolution.
+
+compute_session_hash() {
+    local root="$1"
+    local resolved
+    resolved=$(readlink -f "$root" 2>/dev/null || echo "$root")
+    printf '%s' "$resolved" | sha256sum | head -c 12
+}
+
+session_image_name() {
+    printf '%s-session-%s' "$PROJECT_NAME" "$1"
+}
 
 # ── Default assets location ──────────────────────────────────────────
 # __DEFAULTS_BEGIN__ (do not edit this marker — used by build-dist.sh)
@@ -273,6 +290,17 @@ done
 # Validate agent name (covers default-agent file and --agent flag)
 validate_agent "$AGENT"
 
+# ── Determine mount root (git toplevel or CWD) ──────────────────────
+# Computed early so session identity is available to every subcommand.
+
+MOUNT_DIR="$PWD"
+if git_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+    MOUNT_DIR="$git_root"
+fi
+
+SESSION_HASH=$(compute_session_hash "$MOUNT_DIR")
+SESSION_IMAGE_NAME=$(session_image_name "$SESSION_HASH")
+
 # ── Handle reset (early exit) ──────────────────────────────────────
 
 if [[ "$RUN_MODE" == "reset" ]]; then
@@ -343,15 +371,15 @@ if [[ "$RUN_MODE" == "build" ]]; then
         build_flags+=(--no-cache)
     fi
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+        echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
     else
         if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
-            echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+            echo "Building ${BASE_IMAGE_NAME} image (first build may take several minutes)..."
         else
-            echo "Building ${IMAGE_NAME} image..."
+            echo "Building ${BASE_IMAGE_NAME} image..."
         fi
         engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-            -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+            -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
         echo "Done."
     fi
@@ -362,12 +390,12 @@ fi
 
 if [[ "$RUN_MODE" == "update" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+        echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
         echo "[dry-run] Would run: $ENGINE image prune -f"
     else
-        echo "Updating ${IMAGE_NAME} image (pull + no-cache rebuild)..."
+        echo "Updating ${BASE_IMAGE_NAME} image (pull + no-cache rebuild)..."
         engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-            --pull --no-cache -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+            --pull --no-cache -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
         touch "${BUILD_DIR}/.last-build"
         "$ENGINE" image prune -f
         echo "Done."
@@ -379,15 +407,28 @@ fi
 
 if [[ "$RUN_MODE" == "clean" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE rmi ${IMAGE_NAME}"
+        echo "[dry-run] Would run: $ENGINE rmi ${BASE_IMAGE_NAME}"
+        echo "[dry-run] Would run: $ENGINE rmi <all ${PROJECT_NAME}-session-* images>"
         [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
+        [[ -d "${SESSION_DIR}" ]] && echo "[dry-run] Would remove: ${SESSION_DIR}"
         echo "[dry-run] Would run: $ENGINE image prune -f"
     else
-        echo "Cleaning ${IMAGE_NAME}..."
-        "$ENGINE" rmi "${IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${IMAGE_NAME}" || echo "  Image ${IMAGE_NAME} not found (skipped)"
+        echo "Cleaning ${PROJECT_NAME}..."
+        "$ENGINE" rmi "${BASE_IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${BASE_IMAGE_NAME}" || echo "  Image ${BASE_IMAGE_NAME} not found (skipped)"
+        # Remove any session images for this project
+        session_images=$("$ENGINE" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "^${PROJECT_NAME}-session-[0-9a-f]+:" || true)
+        if [[ -n "$session_images" ]]; then
+            while IFS= read -r img; do
+                "$ENGINE" rmi "$img" >/dev/null 2>&1 && echo "  Removed image ${img}"
+            done <<<"$session_images"
+        fi
         if [[ -d "${CONFIG_DIR}" ]]; then
             rm -rf "${CONFIG_DIR}"
             echo "  Removed config dir ${CONFIG_DIR}"
+        fi
+        if [[ -d "${SESSION_DIR}" ]]; then
+            rm -rf "${SESSION_DIR}"
+            echo "  Removed session dir ${SESSION_DIR}"
         fi
         "$ENGINE" image prune -f >/dev/null 2>&1
         echo "Done."
@@ -429,11 +470,11 @@ if [[ "$DRY_RUN" == "true" && "$BUILD_OVERRIDE" != "force" ]] || [[ "$RUN_MODE" 
 elif [[ "$BUILD_OVERRIDE" == "force" ]]; then
     needs_build=true
 elif [[ "$BUILD_OVERRIDE" == "skip" ]]; then
-    if ! engine_image_exists "${IMAGE_NAME}"; then
-        die "image '${IMAGE_NAME}' not found (cannot use --no-rebuild)"
+    if ! engine_image_exists "${BASE_IMAGE_NAME}"; then
+        die "image '${BASE_IMAGE_NAME}' not found (cannot use --no-rebuild)"
     fi
     needs_build=false
-elif ! engine_image_exists "${IMAGE_NAME}"; then
+elif ! engine_image_exists "${BASE_IMAGE_NAME}"; then
     needs_build=true
 else
     last_build_marker="${BUILD_DIR}/.last-build"
@@ -454,20 +495,21 @@ FIRST_RUN=false
 
 if [[ "${needs_build}" == "true" ]]; then
     if [[ ! -f "${BUILD_DIR}/.last-build" ]]; then
-        echo "Building ${IMAGE_NAME} image (first build may take several minutes)..."
+        echo "Building ${BASE_IMAGE_NAME} image (first build may take several minutes)..."
     else
-        echo "Building ${IMAGE_NAME} image..."
+        echo "Building ${BASE_IMAGE_NAME} image..."
     fi
-    engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+    engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
     touch "${BUILD_DIR}/.last-build"
     FIRST_RUN=true
 fi
 
-# ── Determine mount root (git toplevel or CWD) ──────────────────────
+# ── Resolve active image (session if present, else base) ────────────
 
-MOUNT_DIR="$PWD"
-if git_root=$(git rev-parse --show-toplevel 2>/dev/null); then
-    MOUNT_DIR="$git_root"
+if engine_image_exists "${SESSION_IMAGE_NAME}"; then
+    ACTIVE_IMAGE="${SESSION_IMAGE_NAME}"
+else
+    ACTIVE_IMAGE="${BASE_IMAGE_NAME}"
 fi
 
 if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
@@ -491,7 +533,7 @@ env_vars=(
     -e "AGENT=${AGENT}"
     -e "AGENT_CONFIG_DIR=${agent_config_dir}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
-    -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${IMAGE_NAME} agent=${AGENT} host_cwd=${PWD}"
+    -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${ACTIVE_IMAGE} agent=${AGENT} host_cwd=${PWD}"
 )
 
 # ── Agent-specific auth ─────────────────────────────────────────────
@@ -557,11 +599,18 @@ fi
 
 if [[ "${RUN_MODE}" == "info" ]]; then
     echo "Engine:        ${ENGINE} ($("$ENGINE" --version 2>/dev/null | head -1))"
-    if engine_image_exists "${IMAGE_NAME}"; then
-        echo "Image:         ${IMAGE_NAME} (built)"
+    if engine_image_exists "${BASE_IMAGE_NAME}"; then
+        echo "Base image:    ${BASE_IMAGE_NAME} (built)"
     else
-        echo "Image:         ${IMAGE_NAME} (not built)"
+        echo "Base image:    ${BASE_IMAGE_NAME} (not built)"
     fi
+    if engine_image_exists "${SESSION_IMAGE_NAME}"; then
+        echo "Session image: ${SESSION_IMAGE_NAME} (committed for this CWD)"
+    else
+        echo "Session image: ${SESSION_IMAGE_NAME} (none — first run will use base)"
+    fi
+    echo "Session hash:  ${SESSION_HASH} (CWD: ${MOUNT_DIR})"
+    echo "Active image:  ${ACTIVE_IMAGE}"
     echo "Agent:         ${AGENT}"
     if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
         echo "Default agent: $(<"$DEFAULT_AGENT_FILE") (from ${DEFAULT_AGENT_FILE})"
@@ -572,11 +621,11 @@ if [[ "${RUN_MODE}" == "info" ]]; then
     echo "Containerfile: ${BUILD_DIR}/Containerfile"
 
     # Show agent versions via a quick container run (if image exists)
-    if engine_image_exists "${IMAGE_NAME}"; then
+    if engine_image_exists "${ACTIVE_IMAGE}"; then
         echo ""
-        echo "Agent versions (from image):"
+        echo "Agent versions (from ${ACTIVE_IMAGE}):"
         for va in $AVAILABLE_AGENTS; do
-            ver=$("$ENGINE" run --rm --entrypoint "$va" "${IMAGE_NAME}" --version 2>/dev/null | head -1 || echo "unknown")
+            ver=$("$ENGINE" run --rm --entrypoint "$va" "${ACTIVE_IMAGE}" --version 2>/dev/null | head -1 || echo "unknown")
             echo "  ${va}: ${ver}"
         done
     fi
@@ -592,7 +641,7 @@ if [[ "${RUN_MODE}" == "check" ]]; then
         "${env_vars[@]}" \
         "${mounts[@]}" \
         "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
-        "${IMAGE_NAME}" \
+        "${ACTIVE_IMAGE}" \
         checkhealth.sh "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
 fi
 
@@ -607,7 +656,7 @@ if [[ "${RUN_MODE}" == "shell" ]]; then
         "${mounts[@]}" \
         "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
         --entrypoint /bin/bash \
-        "${IMAGE_NAME}" \
+        "${ACTIVE_IMAGE}" \
         "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"
 fi
 
@@ -622,5 +671,5 @@ engine_run \
     "${env_vars[@]}" \
     "${mounts[@]}" \
     "${EXTRA_CONTAINER_ARGS[@]+"${EXTRA_CONTAINER_ARGS[@]}"}" \
-    "${IMAGE_NAME}" \
+    "${ACTIVE_IMAGE}" \
     "${agent_cmd[@]}" "${AGENT_ARGS[@]+"${AGENT_ARGS[@]}"}"

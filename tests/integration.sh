@@ -10,7 +10,7 @@ set -uo pipefail
 PASS=0
 FAIL=0
 : "${PROJECT_NAME:?PROJECT_NAME must be set (run via: just test)}"
-IMAGE_NAME="${PROJECT_NAME}"
+IMAGE_NAME="${PROJECT_NAME}-base"
 CONTAINER_HOME="/home/${PROJECT_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
 LAUNCHER="${SCRIPT_DIR}/aidock"
@@ -654,6 +654,39 @@ if $RUN_UNIT; then
         pass "invalid default-agent file caught"
     else
         fail "invalid default-agent file caught" "got: $invalid_output"
+    fi
+
+    # ── Session image scheme ─────────────────────────────────────────────
+
+    section "Session image scheme"
+
+    # info should show both base and session image lines, plus session hash
+    info_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
+    if echo "$info_output" | grep -q "Base image:.*${PROJECT_NAME}-base"; then
+        pass "info shows base image"
+    else
+        fail "info shows base image" "got: $info_output"
+    fi
+
+    if echo "$info_output" | grep -qE "Session image:.*${PROJECT_NAME}-session-[0-9a-f]{12}"; then
+        pass "info shows session image with 12-char hash"
+    else
+        fail "info shows session image with 12-char hash" "got: $info_output"
+    fi
+
+    if echo "$info_output" | grep -qE "Session hash:.*[0-9a-f]{12}"; then
+        pass "info shows session hash"
+    else
+        fail "info shows session hash" "got: $info_output"
+    fi
+
+    # Hash must be deterministic for same CWD across two info invocations
+    hash1=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1 | grep -oE "Session hash: +[0-9a-f]{12}" | awk '{print $3}')
+    hash2=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1 | grep -oE "Session hash: +[0-9a-f]{12}" | awk '{print $3}')
+    if [[ -n "$hash1" && "$hash1" == "$hash2" ]]; then
+        pass "session hash is deterministic for the same CWD"
+    else
+        fail "session hash is deterministic for the same CWD" "hash1=$hash1 hash2=$hash2"
     fi
 
     # ── First-run message ────────────────────────────────────────────────
