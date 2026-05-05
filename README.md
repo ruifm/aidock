@@ -127,7 +127,7 @@ Setup hints if you're missing one:
 | Claude | Set `ANTHROPIC_API_KEY`, or run `claude /login` once on the host |
 | Codex | Set `OPENAI_API_KEY`, or run `codex login` once on the host |
 
-Tokens and credential files are forwarded into the container via a per-agent allowlist (auth/account state only). Agent session history and chat data live inside the per-project committed image, so different projects never see each other's sessions.
+A per-agent allowlist bind-mounts the host's auth tokens, credential files, and stable settings/rule files (e.g. `settings.json`, `CLAUDE.md`, `AGENTS.md`, `~/.config/github-copilot/skills/`) into the container so login state and your hand-authored config follow you across projects. Agent session history and chat data are **not** mounted — they live inside the per-project committed image, so different projects never see each other's chat picker.
 
 #### Picking an agent
 
@@ -162,7 +162,7 @@ The base image is Fedora-based and intentionally lean:
 | Category | Tools |
 |----------|-------|
 | Languages | Node.js, Python 3 |
-| Formatters / linters | prettier, ruff, shfmt, ShellCheck |
+| Formatters / linters | prettier, ruff, ShellCheck |
 | Search & nav | ripgrep, fd, jq, tree, less |
 | Misc | git, curl, wget, diffutils, patch, sudo, just, sqlite |
 | AI agents | Copilot CLI, Claude Code, Codex |

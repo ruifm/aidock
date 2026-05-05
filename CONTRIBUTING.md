@@ -11,6 +11,8 @@ Clone the repo and make sure you have these on your host:
 - [shfmt](https://github.com/mvdan/sh) (Bash formatter)
 - [ShellCheck](https://www.shellcheck.net/) (Bash linter)
 - [hadolint](https://github.com/hadolint/hadolint) (Containerfile linter)
+- [prettier](https://prettier.io/) (JSON/YAML formatter)
+- [yamllint](https://yamllint.readthedocs.io/) (YAML linter) and `jq` (JSON validator)
 - [Podman](https://podman.io/) or Docker (for integration tests)
 
 ## Development workflow
@@ -28,7 +30,7 @@ just test-unit   # run unit tests (no container needed)
 just test        # build image + run full integration tests
 ```
 
-The default Containerfile / init-home.sh / checkhealth.sh are inlined as quoted heredocs inside `aidock` (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`) and seeded to `~/.config/aidock/` on first run. To inspect or lint one:
+The default `Containerfile` is inlined as a quoted heredoc inside `aidock` (`emit_containerfile`) and seeded to `~/.config/aidock/` on first run. The container's entrypoint and healthcheck are not separate files — they live as hidden subcommands of the launcher itself (`aidock __init-home`, `aidock __checkhealth`), and the image just `COPY`s the launcher in. To inspect or lint the embedded Containerfile:
 
 ```bash
 aidock --emit-default Containerfile | hadolint -
@@ -55,7 +57,7 @@ Each commit should pass `just check`. Use `just install-hooks` to set up the pre
 
 ## Pull requests
 
-1. Fork the repo and create a branch from `master`.
+1. Fork the repo and create a branch from `main`.
 2. Make your changes in `aidock`.
 3. Run `just check` — all tests must pass.
 4. Open a PR with a clear description of what changed and why.
