@@ -906,6 +906,19 @@ EOF
     else
         fail "build --dry-run skips seed when no agents configured" "got: $build_dry_zero"
     fi
+
+    # Seed filter: only configured agents are seeded.
+    build_dry_filter=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+    if echo "$build_dry_filter" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot$" &&
+        ! echo "$build_dry_filter" | grep -q "@anthropic-ai/claude-code" &&
+        ! echo "$build_dry_filter" | grep -q "@openai/codex"; then
+        pass "build seed step filters to configured agents"
+    else
+        fail "build seed step filters to configured agents" "got: $build_dry_filter"
+    fi
     rm -rf "$fake_seed_dry"
 
     # ── Host config bind-mount allowlist ─────────────────────────────────
