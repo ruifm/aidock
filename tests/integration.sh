@@ -655,48 +655,6 @@ if $RUN_UNIT; then
         fail "--version shows version" "got: $version_output"
     fi
 
-    # ── Diff mode ────────────────────────────────────────────────────────
-
-    section "Diff mode"
-
-    # --diff with no drift returns 0 and says "no drift"
-    # First, seed config by running the launcher
-    timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild >/dev/null 2>&1
-    # Then reset to get fresh defaults
-    timeout "${TIMEOUT}" "${LAUNCHER}" reset >/dev/null 2>&1
-    timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild >/dev/null 2>&1
-    diff_clean=$(timeout "${TIMEOUT}" "${LAUNCHER}" diff 2>&1)
-    diff_rc=$?
-    if [[ $diff_rc -eq 0 ]] && echo "$diff_clean" | grep -qi "no drift"; then
-        pass "diff with no drift returns 0"
-    else
-        fail "diff with no drift returns 0" "rc=$diff_rc, got: $diff_clean"
-    fi
-
-    # --diff detects modification and returns 1
-    echo "# user edit" >>"${CONFIG_DIR}/Containerfile"
-    diff_modified=$(timeout "${TIMEOUT}" "${LAUNCHER}" diff 2>&1)
-    diff_mod_rc=$?
-    sed -i '/# user edit/d' "${CONFIG_DIR}/Containerfile"
-    if [[ $diff_mod_rc -eq 1 ]] && echo "$diff_modified" | grep -q "user edit"; then
-        pass "diff detects modification (exit 1)"
-    else
-        fail "diff detects modification (exit 1)" "rc=$diff_mod_rc, got: $diff_modified"
-    fi
-
-    # --diff --agent scopes to agent config
-    # Clean and seed agent config from defaults so there's no drift
-    rm -rf "${CONFIG_DIR}/copilot"
-    mkdir -p "${CONFIG_DIR}/copilot"
-    cp "${SCRIPT_DIR}/defaults/agents/copilot/"* "${CONFIG_DIR}/copilot/"
-    diff_agent=$(timeout "${TIMEOUT}" "${LAUNCHER}" diff --agent copilot 2>&1)
-    diff_agent_rc=$?
-    if [[ $diff_agent_rc -eq 0 ]] && echo "$diff_agent" | grep -qi "no drift"; then
-        pass "diff --agent scopes to agent"
-    else
-        fail "diff --agent scopes to agent" "rc=$diff_agent_rc, got: $diff_agent"
-    fi
-
     # ── Default agent preference ─────────────────────────────────────────
 
     section "Default agent preference"
@@ -836,15 +794,6 @@ if $RUN_UNIT; then
         pass "dist seeds Containerfile without repo"
     else
         fail "dist seeds Containerfile without repo" "file not found after dry-run"
-    fi
-
-    # --diff works from embedded assets
-    smoke_diff=$(XDG_CONFIG_HOME="$smoke_cfg" GH_TOKEN=fake timeout "${TIMEOUT}" "${smoke_dir}/aidock" diff 2>&1)
-    smoke_diff_rc=$?
-    if [[ $smoke_diff_rc -eq 0 ]] && echo "$smoke_diff" | grep -q "No drift"; then
-        pass "dist --diff works without repo"
-    else
-        fail "dist --diff works without repo" "rc=${smoke_diff_rc}, got: $smoke_diff"
     fi
 
     rm -rf "$smoke_dir" "$smoke_cfg"

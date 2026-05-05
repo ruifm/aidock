@@ -26,7 +26,6 @@ Commands:
   check          Run container healthcheck
   info           Show engine, image, and agent info
   reset          Reset config to defaults (preserves session data)
-  diff           Show config drift between defaults and user config
 
 Options:
   -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
@@ -204,7 +203,7 @@ validate_agent() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset diff"
+readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -352,47 +351,6 @@ if [[ "$RUN_MODE" == "reset" ]]; then
             echo "Config dir: ${CONFIG_DIR}/"
             echo "Rebuild will be triggered on next run."
         fi
-    fi
-    exit 0
-fi
-
-# ── Handle diff (early exit) ───────────────────────────────────────
-
-if [[ "$RUN_MODE" == "diff" ]]; then
-    get_defaults_dir || exit 1
-    has_diff=false
-    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-        # Diff agent config only
-        default_dir="${_DEFAULTS_DIR}/agents/${AGENT}"
-        user_dir="${CONFIG_DIR}/${AGENT}"
-        if [[ ! -d "$user_dir" ]]; then
-            echo "No user config for ${AGENT} (${user_dir} does not exist)."
-            exit 0
-        fi
-        if diff -ru "$default_dir" "$user_dir" --color=auto; then
-            echo "No drift: ${AGENT} config matches defaults."
-        else
-            has_diff=true
-        fi
-    else
-        # Diff Containerfile and support files
-        for name in Containerfile init-home.sh checkhealth.sh agents; do
-            default="${_DEFAULTS_DIR}/${name}"
-            user="${CONFIG_DIR}/${name}"
-            if [[ ! -e "$user" ]]; then
-                echo "Missing: ${user} (not yet seeded)"
-                continue
-            fi
-            if ! diff -ru "$default" "$user" --color=auto; then
-                has_diff=true
-            fi
-        done
-        if [[ "$has_diff" == "false" ]]; then
-            echo "No drift: build files match defaults."
-        fi
-    fi
-    if [[ "$has_diff" == "true" ]]; then
-        exit 1
     fi
     exit 0
 fi
