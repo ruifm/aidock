@@ -38,6 +38,8 @@ Options:
 Command-specific options:
   build:  --no-cache    Force full rebuild (no layer cache)
   run:    --no-rebuild  Skip auto-rebuild check
+          --commit POLICY  Override commit_on_exit (always|prompt|never)
+  shell:  --commit POLICY  Override commit_on_exit (always|prompt|never)
   reset:  --purge       Delete everything (config + session data); asks confirmation
           --force       Skip confirmation prompt (for scripting)
 
@@ -51,6 +53,7 @@ Configuration:
                       All seeded from defaults on first run. Edit to customize.
   Default agent:      \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/default-agent
   Container args:     \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/container.conf
+  aidock settings:    \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/aidock.conf
 
 Examples:
   ${0##*/}                           # Run default agent (copilot)
@@ -173,6 +176,27 @@ mkdir -p "${BUILD_DIR}"
 
 cp -arn "${_DEFAULTS_DIR}/." "${BUILD_DIR}/" 2>/dev/null || true
 
+# ── Seed aidock.conf with built-in defaults ─────────────────────────
+# Plain KEY=VALUE, sourced as bash. CLI flags override these.
+AIDOCK_CONF="${CONFIG_DIR}/aidock.conf"
+if [[ ! -f "$AIDOCK_CONF" ]]; then
+    cat >"$AIDOCK_CONF" <<'AIDOCKCONF'
+# aidock configuration. Plain KEY=VALUE; comments allowed.
+# CLI flags (e.g. --commit) override values here.
+
+# Behavior on container exit when the container's filesystem changed:
+#   always  Commit the change to the per-CWD session image. (default)
+#   prompt  Ask interactively (10s default-yes timeout).
+#   never   Discard the change.
+commit_on_exit=always
+AIDOCKCONF
+fi
+
+# Source it (KEY=VALUE only). Set defaults first so a missing key is fine.
+commit_on_exit="always"
+# shellcheck disable=SC1090
+[[ -f "$AIDOCK_CONF" ]] && source "$AIDOCK_CONF"
+
 # ── Parse arguments ──────────────────────────────────────────────────
 
 # Read default agent preference (file contains a single agent name)
@@ -196,6 +220,7 @@ BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
 PURGE=false
 FORCE=false
+COMMIT_POLICY_OVERRIDE=""
 
 readonly VERSION="0.1.0"
 
@@ -272,6 +297,24 @@ while [[ $# -gt 0 ]]; do
             FORCE=true
             shift
             ;;
+        --commit | --commit=*)
+            case "$RUN_MODE" in
+                run | shell) ;;
+                *) die "--commit is only valid with the 'run' or 'shell' command" ;;
+            esac
+            if [[ "$1" == --commit=* ]]; then
+                value="${1#--commit=}"
+                shift
+            else
+                [[ $# -ge 2 ]] || die "--commit requires a value (always|prompt|never)"
+                value="$2"
+                shift 2
+            fi
+            case "$value" in
+                always | prompt | never) COMMIT_POLICY_OVERRIDE="$value" ;;
+                *) die "--commit value must be one of: always, prompt, never (got '${value}')" ;;
+            esac
+            ;;
         --)
             shift
             AGENT_ARGS+=("$@")
@@ -289,6 +332,17 @@ done
 
 # Validate agent name (covers default-agent file and --agent flag)
 validate_agent "$AGENT"
+
+# ── Resolve commit_on_exit policy (CLI flag wins over conf file) ────
+
+if [[ -n "$COMMIT_POLICY_OVERRIDE" ]]; then
+    commit_on_exit="$COMMIT_POLICY_OVERRIDE"
+fi
+case "$commit_on_exit" in
+    always | prompt | never) ;;
+    *) die "invalid commit_on_exit '${commit_on_exit}' (must be: always, prompt, never)" ;;
+esac
+readonly COMMIT_POLICY="$commit_on_exit"
 
 # ── Determine mount root (git toplevel or CWD) ──────────────────────
 # Computed early so session identity is available to every subcommand.
@@ -611,6 +665,7 @@ if [[ "${RUN_MODE}" == "info" ]]; then
     fi
     echo "Session hash:  ${SESSION_HASH} (CWD: ${MOUNT_DIR})"
     echo "Active image:  ${ACTIVE_IMAGE}"
+    echo "Commit policy: ${COMMIT_POLICY} (commit_on_exit)"
     echo "Agent:         ${AGENT}"
     if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
         echo "Default agent: $(<"$DEFAULT_AGENT_FILE") (from ${DEFAULT_AGENT_FILE})"
