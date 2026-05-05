@@ -531,19 +531,9 @@ if $RUN_UNIT; then
         fail "run --dry-run redacts auth tokens" "got: $(echo "$dry_output" | grep -o 'GH_TOKEN=[^ ]*')"
     fi
 
-    # NO_UPDATE_NOTIFIER is set to suppress ephemeral update prompts
-    if echo "$dry_output" | grep -q 'NO_UPDATE_NOTIFIER=1'; then
-        pass "run sets NO_UPDATE_NOTIFIER=1"
-    else
-        fail "run sets NO_UPDATE_NOTIFIER=1" "not found in dry-run output"
-    fi
-
-    # COPILOT_AUTO_UPDATE=false suppresses Copilot's built-in update check
-    if echo "$dry_output" | grep -q 'COPILOT_AUTO_UPDATE=false'; then
-        pass "run sets COPILOT_AUTO_UPDATE=false"
-    else
-        fail "run sets COPILOT_AUTO_UPDATE=false" "not found in dry-run output"
-    fi
+    # NO_UPDATE_NOTIFIER / COPILOT_AUTO_UPDATE were dropped along with
+    # ephemeral drift detection: agent self-updates now persist via the
+    # per-CWD session image commit on exit.
 
     # Unknown option is rejected
     excl_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --bogus 2>&1 || true)

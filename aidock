@@ -551,11 +551,6 @@ env_vars=(
     -e "AGENT_CONFIG_DIR=${agent_config_dir}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "CONTAINER_SESSION_INFO=container=${ENGINE} image=${IMAGE_NAME} agent=${AGENT} host_cwd=${PWD}"
-
-    # Suppress update prompts — in-container updates are ephemeral,
-    # so the prompts are misleading. Use 'aidock update-agents' instead.
-    -e "NO_UPDATE_NOTIFIER=1"
-    -e "COPILOT_AUTO_UPDATE=false"
 )
 
 # ── Agent-specific auth ─────────────────────────────────────────────
