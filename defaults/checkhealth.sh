@@ -318,14 +318,6 @@ for tool in git jq rg fd just curl; do
     check_bin "$tool" "PATH"
 done
 
-# ── Document & media tools ───────────────────────────────────────────
-
-section "Document & media tools"
-
-for tool in pdftotext tesseract w3m xmlstarlet pandoc convert sqlite3; do
-    check_bin "$tool" "PATH"
-done
-
 # ── Git configuration ────────────────────────────────────────────────
 
 section "Git"

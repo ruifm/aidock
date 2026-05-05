@@ -23,10 +23,6 @@ RUN dnf install -y \
         which procps-ng findutils \
         # Runtimes & compilers
         nodejs npm python3 python3-pip \
-        # Document analysis
-        poppler-utils tesseract w3m xmlstarlet pandoc \
-        # Image manipulation
-        ImageMagick \
         # Database
         sqlite \
         # Shell tools
@@ -47,9 +43,9 @@ RUN npm install -g \
         firecrawl-mcp \
     && npm cache clean --force
 
-# ── Python packages (LSP, formatters, document & image libraries) ──────
+# ── Python packages (LSP and formatters) ─────────────────────────────
 RUN pip install --break-system-packages \
-        basedpyright ruff openpyxl Pillow python-docx
+        basedpyright ruff
 
 # ── Formatters ────────────────────────────────────────────────────────
 RUN npm install -g prettier
