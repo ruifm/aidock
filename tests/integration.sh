@@ -990,6 +990,32 @@ EOF
     else
         fail "update-agents dry-run plan against base image" "got: $ua_dry"
     fi
+
+    # Filter: only configured agents are reinstalled.
+    ua_filtered=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+    if echo "$ua_filtered" | grep -q "configured agents: copilot$" &&
+        echo "$ua_filtered" | grep -q "npm install -g @github/copilot &&" &&
+        ! echo "$ua_filtered" | grep -q "@anthropic-ai/claude-code" &&
+        ! echo "$ua_filtered" | grep -q "@openai/codex"; then
+        pass "update-agents reinstalls only configured agents"
+    else
+        fail "update-agents reinstalls only configured agents" "got: $ua_filtered"
+    fi
+
+    # No agents configured → dies with all hints.
+    ua_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+        HOME="${TEST_TMPDIR}" \
+        CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+    if echo "$ua_zero" | grep -q "no agent is configured"; then
+        pass "update-agents dies when no agents configured"
+    else
+        fail "update-agents dies when no agents configured" "got: $ua_zero"
+    fi
+
     rm -rf "$fake_base"
 
     # ── Host config bind-mount allowlist ─────────────────────────────────
