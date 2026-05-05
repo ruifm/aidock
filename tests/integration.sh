@@ -369,31 +369,23 @@ if $RUN_UNIT; then
         fail "--no-cache rejected outside build" "expected error, got: $build_excl"
     fi
 
-    # reset --purge -a --force deletes agent dir entirely
+    # purge -a --force deletes agent dir entirely
     mkdir -p "${CONFIG_DIR}/codex"
     touch "${CONFIG_DIR}/codex/sentinel"
-    reset_purge_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --purge --force --agent codex 2>&1)
+    reset_purge_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" purge --force --agent codex 2>&1)
     if [[ ! -d "${CONFIG_DIR}/codex" ]] && echo "$reset_purge_output" | grep -q "Purged"; then
-        pass "reset --purge deletes agent dir"
+        pass "purge deletes agent dir"
     else
-        fail "reset --purge deletes agent dir" "dir still exists or wrong output: $reset_purge_output"
+        fail "purge deletes agent dir" "dir still exists or wrong output: $reset_purge_output"
     fi
 
-    # reset --agent without --purge is rejected (no defaults to restore)
-    reset_noseed_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --agent codex 2>&1 || true)
-    if echo "$reset_noseed_output" | grep -q "requires --purge"; then
-        pass "reset --agent without --purge rejected"
-    else
-        fail "reset --agent without --purge rejected" "got: $reset_noseed_output"
-    fi
-
-    # --purge rejected outside reset
-    _purge_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --purge 2>&1)
+    # --force rejected outside purge
+    _purge_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --force 2>&1)
     _purge_rc=$?
-    if echo "$_purge_out" | grep -q "error.*--purge"; then
-        pass "--purge rejected outside reset"
+    if echo "$_purge_out" | grep -q "error.*--force"; then
+        pass "--force rejected outside purge"
     else
-        fail "--purge rejected outside reset" "rc=$_purge_rc out=[$_purge_out]"
+        fail "--force rejected outside purge" "rc=$_purge_rc out=[$_purge_out]"
     fi
 
     # ── Build / Update / Clean modes ─────────────────────────────────────
@@ -722,30 +714,16 @@ if $RUN_UNIT; then
     fi
     rm -f "${sd}/${fake_hash}"
 
-    # ── reset --session ──────────────────────────────────────────────────
+    # ── drop-session ────────────────────────────────────────────────────
 
-    section "reset --session"
+    section "drop-session"
 
-    rs_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --session --dry-run 2>&1 || true)
+    rs_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" drop-session --dry-run 2>&1 || true)
     if echo "$rs_dry" | grep -q "Would run.*rmi.*${PROJECT_NAME}-session-" &&
         echo "$rs_dry" | grep -q "Would remove:.*sessions/[0-9a-f]\+"; then
-        pass "reset --session dry-run shows actions"
+        pass "drop-session dry-run shows actions"
     else
-        fail "reset --session dry-run shows actions" "got: $rs_dry"
-    fi
-
-    rs_excl=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --session --purge 2>&1 || true)
-    if echo "$rs_excl" | grep -q "mutually exclusive"; then
-        pass "reset --session and --purge are mutually exclusive"
-    else
-        fail "reset --session and --purge are mutually exclusive" "got: $rs_excl"
-    fi
-
-    rs_outside=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --session 2>&1 || true)
-    if echo "$rs_outside" | grep -q "only valid with the 'reset'"; then
-        pass "--session rejected outside reset"
-    else
-        fail "--session rejected outside reset" "got: $rs_outside"
+        fail "drop-session dry-run shows actions" "got: $rs_dry"
     fi
 
     # ── update-agents ────────────────────────────────────────────────────
@@ -920,27 +898,35 @@ EOF
     # Clean up the edit
     sed -i '/# user customization/d' "${CONFIG_DIR}/Containerfile"
 
-    # reset (without -a) should overwrite build files with defaults
+    # reset-build should overwrite build files with defaults
     echo "# user customization for reset test" >>"${CONFIG_DIR}/Containerfile"
-    timeout "${TIMEOUT}" "${LAUNCHER}" reset >/dev/null 2>&1
+    timeout "${TIMEOUT}" "${LAUNCHER}" reset-build >/dev/null 2>&1
     if [[ -f "${CONFIG_DIR}/Containerfile" ]] && ! grep -q "# user customization for reset test" "${CONFIG_DIR}/Containerfile"; then
-        pass "reset overwrites build files with defaults"
+        pass "reset-build overwrites build files with defaults"
     else
-        fail "reset overwrites build files with defaults" "customization still present or Containerfile missing"
+        fail "reset-build overwrites build files with defaults" "customization still present or Containerfile missing"
     fi
 
     # .last-build should be removed (triggers rebuild)
     if [[ ! -f "${CONFIG_DIR}/.last-build" ]]; then
-        pass "reset removes .last-build marker"
+        pass "reset-build removes .last-build marker"
     else
-        fail "reset removes .last-build marker"
+        fail "reset-build removes .last-build marker"
     fi
 
     # Build files should still exist (overwritten, not deleted)
     if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -f "${CONFIG_DIR}/aidock" ]]; then
-        pass "build files present after reset"
+        pass "build files present after reset-build"
     else
-        fail "build files present after reset" "Containerfile or aidock missing"
+        fail "build files present after reset-build" "Containerfile or aidock missing"
+    fi
+
+    # reset-build rejects --agent
+    rb_agent=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset-build --agent codex 2>&1 || true)
+    if echo "$rb_agent" | grep -q "does not accept --agent"; then
+        pass "reset-build rejects --agent"
+    else
+        fail "reset-build rejects --agent" "got: $rb_agent"
     fi
 
     # --info should show Containerfile path

@@ -245,7 +245,9 @@ Commands:
   shell          Open a debug shell in container
   check          Run container healthcheck
   info           Show engine, image, and agent info
-  reset          Reset config to defaults (preserves session data)
+  reset-build    Re-seed Containerfile/aidock from defaults (next run rebuilds)
+  drop-session   Remove this CWD's session image + record (next run uses base)
+  purge          Delete config + session data (with confirmation)
   list-sessions  List recorded per-CWD sessions
 
 Options:
@@ -255,13 +257,12 @@ Options:
   -v, --version      Show version
 
 Command-specific options:
-  build:  --no-cache    Force full rebuild (no layer cache)
-  run:    --no-rebuild  Skip auto-rebuild check
-          --commit POLICY  Override commit_on_exit (always|prompt|never)
-  shell:  --commit POLICY  Override commit_on_exit (always|prompt|never)
-  reset:  --purge       Delete everything (config + session data); asks confirmation
-          --session     Drop the current CWD's session image (back to base)
-          --force       Skip confirmation prompt (for scripting)
+  build:         --no-cache    Force full rebuild (no layer cache)
+  run:           --no-rebuild  Skip auto-rebuild check
+                 --commit POLICY  Override commit_on_exit (always|prompt|never)
+  shell:         --commit POLICY  Override commit_on_exit (always|prompt|never)
+  purge:         --force       Skip confirmation prompt (for scripting)
+                 -a, --agent NAME  Restrict purge to one agent's data dir
 
 Agent args:
   Arguments after -- are passed to the agent binary.
@@ -281,8 +282,9 @@ Examples:
   ${0##*/} shell                     # Debug shell
   ${0##*/} check                     # Healthcheck
   ${0##*/} info                      # Show diagnostic info
-  ${0##*/} reset -a claude           # Re-seed claude config from defaults
-  ${0##*/} reset --purge -a claude    # Delete all claude config + session data
+  ${0##*/} purge -a claude --force  # Delete all claude config + session data
+  ${0##*/} drop-session              # Reset this CWD's session image to base
+  ${0##*/} reset-build                # Re-seed Containerfile from defaults
   ${0##*/} build --no-cache          # Force full rebuild
   ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
   ${0##*/} -- --help                 # Show agent's own help
@@ -376,7 +378,7 @@ engine_run_committing() {
     exit "$rc"
 }
 
-# Persist hash -> CWD mapping so list-sessions and reset --session can
+# Persist hash -> CWD mapping so list-sessions and drop-session can
 # show meaningful names. Cheap (a tiny file write).
 _record_session() {
     mkdir -p "$SESSION_DIR"
@@ -663,9 +665,7 @@ EXTRA_CONTAINER_ARGS=()
 DRY_RUN=false
 BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
-PURGE=false
 FORCE=false
-RESET_SESSION=false
 COMMIT_POLICY_OVERRIDE=""
 
 readonly VERSION="0.2.0"
@@ -743,7 +743,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset list-sessions"
+readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset-build drop-session purge list-sessions"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -790,19 +790,9 @@ while [[ $# -gt 0 ]]; do
             BUILD_OVERRIDE="skip"
             shift
             ;;
-        --purge)
-            [[ "$RUN_MODE" == "reset" ]] || die "--purge is only valid with the 'reset' command"
-            PURGE=true
-            shift
-            ;;
         --force)
-            [[ "$RUN_MODE" == "reset" ]] || die "--force is only valid with the 'reset' command"
+            [[ "$RUN_MODE" == "purge" ]] || die "--force is only valid with the 'purge' command"
             FORCE=true
-            shift
-            ;;
-        --session)
-            [[ "$RUN_MODE" == "reset" ]] || die "--session is only valid with the 'reset' command"
-            RESET_SESSION=true
             shift
             ;;
         --commit | --commit=*)
@@ -988,86 +978,109 @@ fi
 SESSION_HASH=$(compute_session_hash "$MOUNT_DIR")
 SESSION_IMAGE_NAME=$(session_image_name "$SESSION_HASH")
 
-# ── Handle reset (early exit) ──────────────────────────────────────
+# ── Handle reset-build (early exit) ─────────────────────────────────
+# Re-seeds Containerfile and the launcher copy from defaults, clearing
+# the build marker so the next run rebuilds. Session data and committed
+# session images are untouched.
 
-if [[ "$RUN_MODE" == "reset" ]]; then
-    if [[ "$RESET_SESSION" == "true" ]]; then
-        if [[ "$PURGE" == "true" ]]; then
-            die "--session and --purge are mutually exclusive"
-        fi
-        if [[ "$DRY_RUN" == "true" ]]; then
-            echo "[dry-run] Would run: $ENGINE rmi ${SESSION_IMAGE_NAME}"
-            echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}"
-            echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}.lock"
+if [[ "$RUN_MODE" == "reset-build" ]]; then
+    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+        die "reset-build does not accept --agent (use 'purge --agent X' to nuke per-agent data)"
+    fi
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would re-seed: ${BUILD_DIR}/Containerfile from defaults"
+        echo "[dry-run] Would copy:    $0 -> ${BUILD_DIR}/aidock"
+        echo "[dry-run] Would remove:  ${CONFIG_DIR}/.last-build"
+        exit 0
+    fi
+    seed_default_file Containerfile force
+    rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"
+    cp "$0" "${BUILD_DIR}/aidock"
+    chmod +x "${BUILD_DIR}/aidock"
+    rm -f "${CONFIG_DIR}/.last-build"
+    echo "Reset build files from defaults (session data preserved)."
+    echo "Config dir: ${CONFIG_DIR}/"
+    echo "Rebuild will be triggered on next run."
+    exit 0
+fi
+
+# ── Handle drop-session (early exit) ────────────────────────────────
+# Removes this CWD's committed session image and the session record.
+# Next launch starts from the base image, recommitting on exit.
+
+if [[ "$RUN_MODE" == "drop-session" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE rmi ${SESSION_IMAGE_NAME}"
+        echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}"
+        echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}.lock"
+        exit 0
+    fi
+    if "$ENGINE" image inspect "${SESSION_IMAGE_NAME}" &>/dev/null; then
+        "$ENGINE" rmi "${SESSION_IMAGE_NAME}" >/dev/null 2>&1 &&
+            echo "Removed session image ${SESSION_IMAGE_NAME}" ||
+            echo "Could not remove session image (may be in use)"
+    else
+        echo "Session image ${SESSION_IMAGE_NAME} not present (skipped)."
+    fi
+    rm -f "${SESSION_DIR}/${SESSION_HASH}" "${SESSION_DIR}/${SESSION_HASH}.lock"
+    echo "Cleared session record for ${MOUNT_DIR}."
+    echo "Next launch will start from ${BASE_IMAGE_NAME}."
+    exit 0
+fi
+
+# ── Handle purge (early exit) ───────────────────────────────────────
+# Destructive: rm -rf the whole config dir (or one agent's subdir with
+# --agent X). Session images and records under SESSION_DIR are also
+# removed when purging globally. Asks for confirmation unless --force.
+
+if [[ "$RUN_MODE" == "purge" ]]; then
+    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+        target="${CONFIG_DIR}/${AGENT}"
+        if [[ ! -d "$target" ]]; then
+            echo "Nothing to purge: ${target} does not exist."
             exit 0
         fi
-        if "$ENGINE" image inspect "${SESSION_IMAGE_NAME}" &>/dev/null; then
-            "$ENGINE" rmi "${SESSION_IMAGE_NAME}" >/dev/null 2>&1 &&
-                echo "Removed session image ${SESSION_IMAGE_NAME}" ||
-                echo "Could not remove session image (may be in use)"
-        else
-            echo "Session image ${SESSION_IMAGE_NAME} not present (skipped)."
+        target_size=$(du -sh "$target" 2>/dev/null | cut -f1)
+        printf "\033[1;31mWARNING: This will permanently delete ALL data for %s:\033[0m\n" "$AGENT"
+        echo "  ${target}/ (${target_size})"
+        echo "  This includes config files, session data, and conversation history."
+    else
+        if [[ ! -d "$CONFIG_DIR" ]]; then
+            echo "Nothing to purge: ${CONFIG_DIR} does not exist."
+            exit 0
         fi
-        rm -f "${SESSION_DIR}/${SESSION_HASH}" "${SESSION_DIR}/${SESSION_HASH}.lock"
-        echo "Cleared session record for ${MOUNT_DIR}."
-        echo "Next launch will start from ${BASE_IMAGE_NAME}."
+        target_size=$(du -sh "$CONFIG_DIR" 2>/dev/null | cut -f1)
+        printf "\033[1;31mWARNING: This will permanently delete ALL aidock data:\033[0m\n"
+        echo "  ${CONFIG_DIR}/ (${target_size})"
+        echo "  This includes build files, all agent configs, sessions, and history."
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+            echo "[dry-run] Would remove: ${CONFIG_DIR}/${AGENT}"
+        else
+            echo "[dry-run] Would remove: ${CONFIG_DIR}"
+        fi
         exit 0
     fi
 
-    if [[ "$PURGE" == "true" ]]; then
-        # Destructive: rm -rf with confirmation
-        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-            target="${CONFIG_DIR}/${AGENT}"
-            if [[ ! -d "$target" ]]; then
-                echo "Nothing to purge: ${target} does not exist."
-                exit 0
-            fi
-            target_size=$(du -sh "$target" 2>/dev/null | cut -f1)
-            printf "\033[1;31mWARNING: This will permanently delete ALL data for %s:\033[0m\n" "$AGENT"
-            echo "  ${target}/ (${target_size})"
-            echo "  This includes config files, session data, and conversation history."
-        else
-            if [[ ! -d "$CONFIG_DIR" ]]; then
-                echo "Nothing to purge: ${CONFIG_DIR} does not exist."
-                exit 0
-            fi
-            target_size=$(du -sh "$CONFIG_DIR" 2>/dev/null | cut -f1)
-            printf "\033[1;31mWARNING: This will permanently delete ALL aidock data:\033[0m\n"
-            echo "  ${CONFIG_DIR}/ (${target_size})"
-            echo "  This includes build files, all agent configs, sessions, and history."
+    if [[ "$FORCE" != "true" ]]; then
+        printf "\nContinue? [y/N] "
+        read -r confirm
+        if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
+            echo "Aborted."
+            exit 1
         fi
-
-        if [[ "$FORCE" != "true" ]]; then
-            printf "\nContinue? [y/N] "
-            read -r confirm
-            if [[ "$confirm" != [yY] && "$confirm" != [yY][eE][sS] ]]; then
-                echo "Aborted."
-                exit 1
-            fi
-        fi
-
-        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-            rm -rf "${CONFIG_DIR:?}/${AGENT:?}"
-            echo "Purged ${AGENT} data: deleted ${CONFIG_DIR}/${AGENT}"
-        else
-            rm -rf "$CONFIG_DIR"
-            echo "Purged all data: deleted ${CONFIG_DIR}"
-        fi
-        echo "Defaults will be re-seeded on next run."
-    else
-        # Safe reset: overwrite build files from defaults
-        if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-            die "reset --agent requires --purge (no agent defaults to restore)"
-        fi
-        seed_default_file Containerfile force
-        rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"
-        cp "$0" "${BUILD_DIR}/aidock"
-        chmod +x "${BUILD_DIR}/aidock"
-        rm -f "${CONFIG_DIR}/.last-build"
-        echo "Reset build files from defaults (session data preserved)."
-        echo "Config dir: ${CONFIG_DIR}/"
-        echo "Rebuild will be triggered on next run."
     fi
+
+    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
+        rm -rf "${CONFIG_DIR:?}/${AGENT:?}"
+        echo "Purged ${AGENT} data: deleted ${CONFIG_DIR}/${AGENT}"
+    else
+        rm -rf "$CONFIG_DIR"
+        echo "Purged all data: deleted ${CONFIG_DIR}"
+    fi
+    echo "Defaults will be re-seeded on next run."
     exit 0
 fi
 
@@ -1330,7 +1343,7 @@ fi
 
 if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
     echo "First run. Containerfile: ${BUILD_DIR}/Containerfile"
-    echo "Edit files to customize. Use 'reset' to restore defaults."
+    echo "Edit files to customize. Use 'reset-build' to restore defaults."
 fi
 
 # ── Assemble mounts ─────────────────────────────────────────────────

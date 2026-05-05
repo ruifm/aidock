@@ -80,7 +80,9 @@ aidock [command] [options] [-- agent-args...]
 | `shell` | Open a debug shell in the container |
 | `check` | Run the container healthcheck |
 | `info` | Show engine, image, and agent info |
-| `reset` | Re-seed config from defaults (use `--session` to drop the per-project image) |
+| `reset-build` | Re-seed Containerfile from defaults; next run rebuilds |
+| `drop-session` | Drop this CWD's session image (back to base) |
+| `purge` | Delete config + session data (asks confirmation) |
 | `list-sessions` | List recorded per-project session images |
 
 ### Common workflows
@@ -101,7 +103,7 @@ aidock update-agents              # bump agent versions inside this project's im
 
 # Project sessions
 aidock list-sessions              # which projects have committed state
-aidock reset --session            # drop this project's image, fall back to base
+aidock drop-session               # drop this project's image, fall back to base
 aidock info                       # show engine, image, config paths
 
 # Debugging
@@ -179,7 +181,7 @@ Earlier versions pre-installed a fixed set of language servers and MCP servers. 
 
 If you want a default rule snippet for your agent that nudges this behavior, see the [Recommended rule-file snippet](#recommended-rule-file-snippet) section above.
 
-> Existing per-CWD images built before this change still contain the old LSP/MCP packages. Run `aidock reset` then `aidock build` to rebuild a slimmer base, or just leave them — they're harmless.
+> Existing per-CWD images built before this change still contain the old LSP/MCP packages. Run `aidock drop-session` then relaunch to rebuild a slimmer base, or just leave them — they're harmless.
 
 ## Configuration
 
@@ -217,7 +219,7 @@ echo 'RUN dnf install -y htop tmux' >> ~/.config/aidock/Containerfile
 aidock build
 
 # Reset the base Containerfile to defaults (preserves project sessions)
-aidock reset
+aidock reset-build
 ```
 
 For a single project's needs, just have the agent install what it needs. The next exit's commit will keep it.
@@ -277,7 +279,7 @@ A per-hash `flock` under `~/.local/share/aidock/sessions/<hash>.lock` serializes
 
 - **Network is not sandboxed.** The container has full network access.
 - **First build requires internet.** Subsequent runs are offline-capable.
-- **State drift is per-project.** That's the design: a session image only ever grows from what *you* let it grow with. `aidock reset --session` is the eject button.
+- **State drift is per-project.** That's the design: a session image only ever grows from what *you* let it grow with. `aidock drop-session` is the eject button.
 - **Podman vs Docker.** Both work, but Podman provides stronger isolation via rootless user namespaces.
 
 ## Uninstall
