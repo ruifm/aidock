@@ -39,6 +39,7 @@ Command-specific options:
           --commit POLICY  Override commit_on_exit (always|prompt|never)
   shell:  --commit POLICY  Override commit_on_exit (always|prompt|never)
   reset:  --purge       Delete everything (config + session data); asks confirmation
+          --session     Drop the current CWD's session image (back to base)
           --force       Skip confirmation prompt (for scripting)
 
 Agent args:
@@ -338,6 +339,7 @@ BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
 PURGE=false
 FORCE=false
+RESET_SESSION=false
 COMMIT_POLICY_OVERRIDE=""
 
 readonly VERSION="0.1.0"
@@ -415,6 +417,11 @@ while [[ $# -gt 0 ]]; do
             FORCE=true
             shift
             ;;
+        --session)
+            [[ "$RUN_MODE" == "reset" ]] || die "--session is only valid with the 'reset' command"
+            RESET_SESSION=true
+            shift
+            ;;
         --commit | --commit=*)
             case "$RUN_MODE" in
                 run | shell) ;;
@@ -477,6 +484,29 @@ SESSION_IMAGE_NAME=$(session_image_name "$SESSION_HASH")
 
 if [[ "$RUN_MODE" == "reset" ]]; then
     get_defaults_dir || exit 1
+
+    if [[ "$RESET_SESSION" == "true" ]]; then
+        if [[ "$PURGE" == "true" ]]; then
+            die "--session and --purge are mutually exclusive"
+        fi
+        if [[ "$DRY_RUN" == "true" ]]; then
+            echo "[dry-run] Would run: $ENGINE rmi ${SESSION_IMAGE_NAME}"
+            echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}"
+            echo "[dry-run] Would remove: ${SESSION_DIR}/${SESSION_HASH}.lock"
+            exit 0
+        fi
+        if "$ENGINE" image inspect "${SESSION_IMAGE_NAME}" &>/dev/null; then
+            "$ENGINE" rmi "${SESSION_IMAGE_NAME}" >/dev/null 2>&1 &&
+                echo "Removed session image ${SESSION_IMAGE_NAME}" ||
+                echo "Could not remove session image (may be in use)"
+        else
+            echo "Session image ${SESSION_IMAGE_NAME} not present (skipped)."
+        fi
+        rm -f "${SESSION_DIR}/${SESSION_HASH}" "${SESSION_DIR}/${SESSION_HASH}.lock"
+        echo "Cleared session record for ${MOUNT_DIR}."
+        echo "Next launch will start from ${BASE_IMAGE_NAME}."
+        exit 0
+    fi
 
     if [[ "$PURGE" == "true" ]]; then
         # Destructive: rm -rf with confirmation

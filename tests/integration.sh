@@ -817,6 +817,32 @@ if $RUN_UNIT; then
     fi
     rm -f "${sd}/${fake_hash}"
 
+    # ── reset --session ──────────────────────────────────────────────────
+
+    section "reset --session"
+
+    rs_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --session --dry-run 2>&1 || true)
+    if echo "$rs_dry" | grep -q "Would run.*rmi.*${PROJECT_NAME}-session-" &&
+        echo "$rs_dry" | grep -q "Would remove:.*sessions/[0-9a-f]\+"; then
+        pass "reset --session dry-run shows actions"
+    else
+        fail "reset --session dry-run shows actions" "got: $rs_dry"
+    fi
+
+    rs_excl=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset --session --purge 2>&1 || true)
+    if echo "$rs_excl" | grep -q "mutually exclusive"; then
+        pass "reset --session and --purge are mutually exclusive"
+    else
+        fail "reset --session and --purge are mutually exclusive" "got: $rs_excl"
+    fi
+
+    rs_outside=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --session 2>&1 || true)
+    if echo "$rs_outside" | grep -q "only valid with the 'reset'"; then
+        pass "--session rejected outside reset"
+    else
+        fail "--session rejected outside reset" "got: $rs_outside"
+    fi
+
     # ── First-run message ────────────────────────────────────────────────
 
     section "First-run message"
