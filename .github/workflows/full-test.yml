@@ -8,8 +8,6 @@ on:
   push:
     branches: [main]
     paths:
-      - "aidock"
-      - "defaults/**"
       - "src/**"
       - "tests/**"
       - "justfile"
@@ -30,7 +28,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.local/share/containers/storage
-          key: podman-${{ runner.os }}-${{ hashFiles('defaults/Containerfile', 'defaults/**') }}
+          key: podman-${{ runner.os }}-${{ hashFiles('src/aidock') }}
           restore-keys: |
             podman-${{ runner.os }}-
 

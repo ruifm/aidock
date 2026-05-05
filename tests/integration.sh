@@ -13,7 +13,7 @@ FAIL=0
 IMAGE_NAME="${PROJECT_NAME}-base"
 CONTAINER_HOME="/home/${PROJECT_NAME}"
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
-LAUNCHER="${SCRIPT_DIR}/aidock"
+LAUNCHER="${SCRIPT_DIR}/src/aidock"
 AGENT="copilot"
 AGENT_CONFIG_DIR=".copilot"
 
@@ -998,20 +998,20 @@ EOF
         fail "info shows Containerfile path" "got: $info_output"
     fi
 
-    section "Installed artifact (dist smoke test)"
+    section "Installed artifact (standalone launcher smoke test)"
 
-    # Copy dist script to isolated dir — no adjacent repo files
+    # Copy launcher to isolated dir — no adjacent repo files
     smoke_dir=$(mktemp -d)
     smoke_cfg=$(mktemp -d)
     cp "${LAUNCHER}" "${smoke_dir}/aidock"
     chmod +x "${smoke_dir}/aidock"
 
-    # Seeding works from embedded assets
+    # Seeding works from inlined heredoc defaults
     smoke_dry=$(XDG_CONFIG_HOME="$smoke_cfg" GH_TOKEN=fake timeout "${TIMEOUT}" "${smoke_dir}/aidock" --dry-run 2>&1 || true)
     if [[ -f "${smoke_cfg}/aidock/Containerfile" ]]; then
-        pass "dist seeds Containerfile without repo"
+        pass "standalone launcher seeds Containerfile from inlined heredocs"
     else
-        fail "dist seeds Containerfile without repo" "file not found after dry-run"
+        fail "standalone launcher seeds Containerfile from inlined heredocs" "file not found after dry-run"
     fi
 
     rm -rf "$smoke_dir" "$smoke_cfg"

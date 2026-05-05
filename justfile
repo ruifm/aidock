@@ -2,7 +2,7 @@
 # Usage: just <recipe>
 
 export PROJECT_NAME := "aidock"
-launcher := "./" + PROJECT_NAME
+launcher := "src/" + PROJECT_NAME
 
 # Build the container image
 build:
@@ -25,15 +25,15 @@ test: build
     ./tests/integration.sh
 
 # Run unit tests only (no container image needed)
-test-unit: dist
+test-unit:
     ./tests/integration.sh --unit
 
 # Open a shell inside the container for debugging
 shell *args:
     {{launcher}} shell {{args}}
 
-# Install the distributable launcher into PATH
-install: dist
+# Install the launcher into PATH
+install:
     mkdir -p "${HOME}/.local/bin"
     cp {{launcher}} "${HOME}/.local/bin/{{PROJECT_NAME}}"
     @echo "Installed: ~/.local/bin/{{PROJECT_NAME}}"
@@ -50,7 +50,7 @@ info:
 
 # ── Code quality ─────────────────────────────────────────────────────
 
-bash_files := "src/aidock defaults/init-home.sh defaults/checkhealth.sh tests/integration.sh src/build-dist.sh"
+bash_files := "src/aidock tests/integration.sh"
 
 # Format all source files
 fmt:
@@ -61,15 +61,12 @@ fmt:
 lint:
     shellcheck {{bash_files}}
     yamllint -c .yamllint.yml .github/workflows/ .yamllint.yml .hadolint.yaml
-    hadolint defaults/Containerfile
+    @echo "Validating inlined Containerfile via hadolint..."
+    src/aidock --emit-default Containerfile | hadolint -
     @echo "Validating JSON..."; for f in $(find . -name '*.json' -not -path './node_modules/*'); do jq empty "$f" || exit 1; done
 
-# Generate distributable script with embedded assets
-dist:
-    src/build-dist.sh
-
-# Format + lint + dist + unit tests
-check: fmt lint dist test-unit
+# Format + lint + unit tests
+check: fmt lint test-unit
 
 # Install git pre-commit hook
 install-hooks:

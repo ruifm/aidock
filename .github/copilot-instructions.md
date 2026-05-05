@@ -2,24 +2,20 @@
 
 ## Project overview
 
-aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Code, Codex) inside an ephemeral Podman/Docker container. It is a single self-extracting Bash script with embedded default assets.
+aidock is a container wrapper that runs AI coding agents (Copilot CLI, Claude Code, Codex) inside per-CWD stateful Podman/Docker containers. It is a single self-contained Bash script with default Containerfile/init-home/checkhealth contents inlined as heredocs.
 
 ## Repository layout
 
-- `src/aidock` — **dev source** of the launcher script. All code changes go here.
-- `aidock` — **generated** distributable. Never edit directly. Regenerate with `just dist`.
-- `src/build-dist.sh` — builds `./aidock` by embedding `defaults/` as a base64 tarball.
-- `defaults/Containerfile` — Fedora-based container image definition.
-- `defaults/init-home.sh` — container entrypoint script.
-- `defaults/checkhealth.sh` — container healthcheck (run via `aidock check`).
-- `defaults/agents/` — per-agent default configs (copilot, claude, codex).
+- `src/aidock` — the launcher script. This is the file users install and run; there is no separate dist/build step.
 - `tests/integration.sh` — unit and integration test suite.
 - `justfile` — task runner recipes and single source of truth for the project name.
+- `~/.config/aidock/` (per-user, not in repo) — `Containerfile`, `init-home.sh`, `checkhealth.sh`, `aidock.conf`, seeded on first run from inline heredocs in `src/aidock`. User edits there are preserved.
 
 ## Development rules
 
-- Edit `src/aidock`, never `./aidock`. Run `just dist` to regenerate the distributable.
-- Run `just check` before committing (formats, lints, rebuilds dist, runs unit tests).
+- Edit `src/aidock` directly. There is no generated copy.
+- The default Containerfile / init-home.sh / checkhealth.sh live inline in `src/aidock` as quoted heredocs (`emit_containerfile`, `emit_init_home`, `emit_checkhealth`). Use `src/aidock --emit-default <name>` to print one out (used by `just lint` for hadolint).
+- Run `just check` before committing (formats, lints, runs unit tests).
 - Use `just fmt` to format (shfmt for Bash, prettier for JSON/YAML).
 - Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
 - Each commit must pass `just check` and address a single concern.
