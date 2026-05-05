@@ -275,12 +275,6 @@ else
     fail "python3 not found"
 fi
 
-if command -v rustc &>/dev/null; then
-    pass "rustc $(rustc --version | awk '{print $2}')"
-else
-    fail "rustc not found"
-fi
-
 if command -v gcc &>/dev/null; then
     pass "gcc $(gcc --version | head -1 | grep -oP '\d+\.\d+\.\d+' | head -1)"
 else
@@ -289,11 +283,10 @@ fi
 
 # ── LSP servers ──────────────────────────────────────────────────────
 
-section "LSP servers (9 expected)"
+section "LSP servers (8 expected)"
 
 check_bin "typescript-language-server" "/usr/local/bin/typescript-language-server"
 check_bin "basedpyright-langserver" "/usr/local/bin/basedpyright-langserver"
-check_bin "rust-analyzer" "PATH"
 check_bin "clangd" "/usr/bin/clangd"
 check_bin "lua-language-server" "/usr/local/bin/lua-language-server"
 check_bin "bash-language-server" "/usr/local/bin/bash-language-server"

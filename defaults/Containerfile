@@ -37,15 +37,6 @@ RUN dnf install -y \
         ShellCheck just sudo \
     && dnf clean all
 
-# ── Rust toolchain (installed to /usr/local for all users) ────────────
-ENV RUSTUP_HOME="/usr/local/rustup" \
-    CARGO_HOME="/usr/local/cargo"
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain stable --profile minimal \
-    && . "${CARGO_HOME}/env" \
-    && rustup component add rust-analyzer
-ENV PATH="${CARGO_HOME}/bin:${PATH}"
-
 # ── LSPs and MCP servers via npm ─────────────────────────────────────
 RUN npm install -g \
         typescript \
