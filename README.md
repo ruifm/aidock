@@ -201,7 +201,7 @@ All config lives in `~/.config/aidock/` (respects `$XDG_CONFIG_HOME`):
 ```
 # Behavior on container exit when the container's filesystem changed:
 #   always  Commit the change to the per-project session image. (default)
-#   prompt  Ask interactively (10s default-yes timeout).
+#   prompt  Ask interactively (10s timeout; Enter commits, timeout discards).
 #   never   Discard changes (back to base image on next run).
 commit_on_exit=always
 ```

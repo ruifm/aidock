@@ -441,8 +441,10 @@ _maybe_commit_container() {
     "$ENGINE" rm -f "$cname" >/dev/null 2>&1 || true
 }
 
-# Ask "commit? [Y/n]" with a 10s default-yes timeout. Returns 0=commit,
-# 1=discard. Non-tty stdin defaults to yes.
+# Ask "commit? [Y/n]" with a 10s timeout. Returns 0=commit, 1=discard.
+# Empty/Enter still defaults to yes; the *timeout* fallback now defaults
+# to no so an unattended terminal doesn't accumulate session images
+# silently. Non-tty stdin defaults to yes (automation-style).
 _prompt_commit() {
     local n="$1"
     if [[ ! -t 0 ]]; then
@@ -459,8 +461,8 @@ _prompt_commit() {
         esac
     else
         echo "" >&2
-        echo "(timeout — defaulting to yes)" >&2
-        return 0
+        echo "(timeout — defaulting to no)" >&2
+        return 1
     fi
 }
 
