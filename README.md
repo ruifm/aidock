@@ -27,9 +27,9 @@ aidock handles all of that. You get a single Bash script that builds a container
 
 ## Features
 
-- **Agent-agnostic.** Switch between Copilot CLI, Claude Code, and Codex with `-a claude`. All three are pre-installed and pre-configured with MCP servers.
+- **Agent-agnostic.** Switch between Copilot CLI, Claude Code, and Codex with `-a claude`. All three are pre-installed.
 - **Stateful per project.** Each working directory gets its own committed image. Anything the agent installs (apt/dnf packages, language toolchains, global npm modules) and any agent self-update is captured on exit and re-used next time. No more "I told the agent to install something and it forgot".
-- **Slim by default, grows with use.** The base image ships with Node, Python, common LSPs, and MCP servers. Heavier toolchains (Rust, Go, native build tools) are installed on demand and persisted via the per-project commit.
+- **Slim by default, grows with use.** The base image ships with Node, Python, and the three AI agents. Heavier toolchains (Rust, Go, native build tools) and project-specific tooling (LSPs, MCP servers) are installed on demand and persisted via the per-project commit.
 - **Single file, no dependencies.** `aidock` is a Bash script. It needs Podman or Docker and nothing else.
 - **Zero-config path mirroring.** Your project is mounted at the same absolute path inside the container. File references in agent output, error messages, and logs point to real paths on your host.
 - **Safe by default.** Files created by the agent are owned by your user (namespace mapping). Network is open; the host filesystem is not.
@@ -145,7 +145,7 @@ Explicit selection (`-a claude` or `default-agent` file) is a hard contract: if 
 
 aidock containers run as root with full permissions and only your project bind-mounted from the host. Tell your agent it can act freely inside the container — it removes a lot of "may I run this?" friction. Drop something like the following into your agent's instruction file:
 
-> You are running with full root permissions inside a Fedora container with only the current project bind-mounted from the host. Anything you install (`dnf install`, `pip install`, `npm install -g`, etc.) persists across runs because the container is committed on exit. The container is the sandbox — do not ask permission to run destructive commands inside it. If you need anything from the host (config outside the project, global git changes, access to other repos), tell me explicitly so I can do it from the host.
+> You are running with full root permissions inside a Fedora container with only the current project bind-mounted from the host. Anything you install (`dnf install`, `pip install`, `npm install -g`, etc.) persists across runs because the container is committed on exit. The container is the sandbox — do not ask permission to run destructive commands inside it. If you need anything from the host (config outside the project, global git changes, access to other repos), tell me explicitly so I can do it from the host. The base image is intentionally minimal: if you want a language server or an MCP server, install and configure it yourself; the next run will already have it.
 
 Per-agent file conventions:
 
@@ -162,14 +162,24 @@ The base image is Fedora-based and intentionally lean:
 | Category | Tools |
 |----------|-------|
 | Languages | Node.js, Python 3 |
-| LSPs | typescript-language-server, basedpyright, bash-language-server, yaml-language-server, dockerfile-language-server, vscode-langservers-extracted (CSS/HTML/JSON) |
 | Formatters / linters | prettier, ruff, shfmt, ShellCheck |
-| MCP servers | Context7, Sequential Thinking, Playwright, Firecrawl |
 | Search & nav | ripgrep, fd, jq, tree, less |
-| Misc | git, curl, wget, diffutils, patch, sudo, just |
+| Misc | git, curl, wget, diffutils, patch, sudo, just, sqlite |
 | AI agents | Copilot CLI, Claude Code, Codex |
 
 Heavier tooling (Rust, Go, gcc/g++, debuggers, document/media tooling) is **not** in the base image. If your project needs it, ask the agent to install it; the per-project commit will persist the install for next time.
+
+### Why no LSPs or MCP servers?
+
+Earlier versions pre-installed a fixed set of language servers and MCP servers. They were dropped because:
+
+- **MCP servers need per-agent config.** Pre-installing the binary doesn't help if no agent is configured to call it. Reusing the host's MCP config is a non-starter — MCP configs reference host paths and host-only tooling.
+- **LSPs are aspirational.** None of the supported agents currently drive a language server.
+- **The commit-on-exit model handles it.** Tell the agent "install the typescript LSP" or "set up the Playwright MCP server" once; the per-CWD commit persists that install across runs. It's a one-time setup per project.
+
+If you want a default rule snippet for your agent that nudges this behavior, see the [Recommended rule-file snippet](#recommended-rule-file-snippet) section above.
+
+> Existing per-CWD images built before this change still contain the old LSP/MCP packages. Run `aidock reset` then `aidock build` to rebuild a slimmer base, or just leave them — they're harmless.
 
 ## Configuration
 
@@ -178,14 +188,13 @@ All config lives in `~/.config/aidock/` (respects `$XDG_CONFIG_HOME`):
 ```
 ~/.config/aidock/
 ├── Containerfile        # base image definition — edit to customize
-├── init-home.sh         # container entrypoint
-├── checkhealth.sh       # healthcheck script
+├── aidock               # the launcher itself, copied here so the image can COPY it
 ├── aidock.conf          # commit_on_exit policy, etc.
 ├── container.conf       # extra engine args (one per line)
 └── default-agent        # preferred agent name (e.g., "claude")
 ```
 
-The first three files are seeded from inline heredocs in `aidock` itself; user edits there are preserved across upgrades. Per-project session metadata lives under `~/.local/share/aidock/sessions/`.
+`Containerfile` is seeded from an inline heredoc in `aidock` itself; user edits there are preserved across upgrades. The container's entrypoint and healthcheck logic live as hidden subcommands inside the launcher (`aidock __init-home`, `aidock __checkhealth`), so the image just `COPY`s the launcher in. Per-project session metadata lives under `~/.local/share/aidock/sessions/`.
 
 ### `aidock.conf`
 

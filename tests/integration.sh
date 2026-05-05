@@ -158,29 +158,6 @@ if $RUN_INTEGRATION; then
             fail "checkhealth has $fail_count failure lines" "expected 0"
         fi
 
-        # ── Output formatting ────────────────────────────────────────────────
-
-        section "Output formatting"
-
-        # gcc version should be a single line with ✓, no stray version numbers
-        # Strip ANSI escape codes and carriage returns before matching
-        clean_output=$(echo "$check_output" | sed -e 's/\x1b\[[0-9;]*m//g' -e 's/\r$//')
-        gcc_lines=$(echo "$clean_output" | grep -A1 "gcc" | head -2)
-        gcc_main=$(echo "$gcc_lines" | head -1)
-        gcc_next=$(echo "$gcc_lines" | tail -1)
-
-        if echo "$gcc_main" | grep -qP 'gcc \d+\.\d+\.\d+$'; then
-            pass "gcc output is single clean line"
-        else
-            fail "gcc output malformed" "got: $gcc_main"
-        fi
-
-        if echo "$gcc_next" | grep -qP '^\d+\.\d+\.\d+$'; then
-            fail "stray version line after gcc" "got: $gcc_next"
-        else
-            pass "no stray version line after gcc"
-        fi
-
     else
         section "Healthcheck / Output / Auto-rebuild (skipped on CI)"
         pass "skipped: podman userns uid=0,gid=0 unsupported on CI runners"
@@ -235,103 +212,7 @@ if $RUN_INTEGRATION; then
             pass "no rebuild on second invocation"
         fi
 
-        # config.json changes should trigger a rebuild (configs are baked in)
-        # The launcher checks BUILD_DIR (= CONFIG_DIR), not SCRIPT_DIR
-        rebuild_cfg="${CONFIG_DIR}/agents/copilot/config.json"
-        orig_ts=$(stat -c %Y "${rebuild_cfg}")
-        cp "${rebuild_cfg}" "${rebuild_cfg}.bak"
-        sleep 1
-        touch "${rebuild_cfg}"
-
-        rebuild_raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" check 2>&1)
-        if echo "$rebuild_raw" | grep -q "Building ${IMAGE_NAME}"; then
-            pass "config.json change triggers rebuild (configs baked in)"
-        else
-            fail "config.json change did not trigger rebuild" "expected 'Building' message"
-        fi
-
-        # Restore config.json with its original timestamp so later tests don't trigger rebuilds
-        mv "${rebuild_cfg}.bak" "${rebuild_cfg}"
-        touch -d "@${orig_ts}" "${rebuild_cfg}"
-
     fi # end CI skip (auto-rebuild)
-
-    # ── Config assembly (entrypoint) ─────────────────────────────────────
-
-    section "Config assembly"
-
-    # Verify entrypoint copies baked-in defaults to agent config dir
-    config_model=$(run_in_container jq -r '.model' "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/config.json" 2>/dev/null || echo "")
-    if [[ -n "$config_model" && "$config_model" != "null" ]]; then
-        pass "config.json assembled from defaults (model=$config_model)"
-    else
-        fail "config.json not assembled from defaults" "got model=$config_model"
-    fi
-
-    lsp_check=$(run_in_container jq -r 'keys[0]' "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/lsp-config.json" 2>/dev/null || echo "")
-    if [[ -n "$lsp_check" && "$lsp_check" != "null" ]]; then
-        pass "lsp-config.json assembled from defaults"
-    else
-        fail "lsp-config.json not assembled from defaults" "got: $lsp_check"
-    fi
-
-    mcp_check=$(run_in_container jq -r '.mcpServers | keys[0]' "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/mcp-config.json" 2>/dev/null || echo "")
-    if [[ -n "$mcp_check" && "$mcp_check" != "null" ]]; then
-        pass "mcp-config.json assembled from defaults"
-    else
-        fail "mcp-config.json not assembled from defaults" "got: $mcp_check"
-    fi
-
-    # ── Config persistence ────────────────────────────────────────────────
-
-    section "Config persistence"
-
-    # Verify defaults are seeded on first run, then modifications persist
-    persist_dir=$(mktemp -d)
-
-    # First run: config should be seeded from defaults
-    first_model=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-        -v "${persist_dir}:${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/:rw" \
-        -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-        -e "HOME=${CONTAINER_HOME}" \
-        -e "AGENT=${AGENT}" \
-        -e "AGENT_CONFIG_DIR=${AGENT_CONFIG_DIR}" \
-        -e "PROJECT_NAME=${PROJECT_NAME}" \
-        -e "GH_TOKEN=fake-token-for-test" \
-        -w "${SCRIPT_DIR}" \
-        "${IMAGE_NAME}" \
-        jq -r '.model' "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/config.json" 2>/dev/null || echo "")
-
-    if [[ -n "$first_model" && "$first_model" != "null" ]]; then
-        pass "default config seeded on first run"
-    else
-        fail "default config not seeded" "got '$first_model'"
-    fi
-
-    # Simulate agent modifying config on the host (persisted data dir)
-    jq '.model = "user-modified-model"' "${persist_dir}/config.json" >"${persist_dir}/config.json.tmp" &&
-        mv "${persist_dir}/config.json.tmp" "${persist_dir}/config.json"
-
-    # Second run: modified config should survive (cp -n = no clobber)
-    second_model=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-        -v "${persist_dir}:${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/:rw" \
-        -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-        -e "HOME=${CONTAINER_HOME}" \
-        -e "AGENT=${AGENT}" \
-        -e "AGENT_CONFIG_DIR=${AGENT_CONFIG_DIR}" \
-        -e "PROJECT_NAME=${PROJECT_NAME}" \
-        -e "GH_TOKEN=fake-token-for-test" \
-        -w "${SCRIPT_DIR}" \
-        "${IMAGE_NAME}" \
-        jq -r '.model' "${CONTAINER_HOME}/${AGENT_CONFIG_DIR}/config.json" 2>/dev/null || echo "")
-
-    if [[ "$second_model" == "user-modified-model" ]]; then
-        pass "modified config persists across runs (no clobber)"
-    else
-        fail "modified config was overwritten" "expected 'user-modified-model', got '$second_model'"
-    fi
-
-    rm -rf "${persist_dir}"
 
     # ── Per-agent binary checks ──────────────────────────────────────────
 
@@ -358,76 +239,13 @@ if $RUN_INTEGRATION; then
         fi
     done
 
-    # ── Claude config assembly ───────────────────────────────────────────
-
-    section "Claude config assembly"
-
-    claude_data_dir="${CONFIG_DIR}/claude"
-    mkdir -p "${claude_data_dir}"
-
-    claude_settings=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-        -v "${claude_data_dir}:${CONTAINER_HOME}/.claude/:rw" \
-        -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-        -e "HOME=${CONTAINER_HOME}" \
-        -e "AGENT=claude" \
-        -e "AGENT_CONFIG_DIR=.claude" \
-        -e "PROJECT_NAME=${PROJECT_NAME}" \
-        -w "${SCRIPT_DIR}" \
-        "${IMAGE_NAME}" \
-        jq -r '.permissions' "${CONTAINER_HOME}/.claude/settings.json" 2>/dev/null || echo "")
-
-    if [[ -n "$claude_settings" && "$claude_settings" != "null" ]]; then
-        pass "claude settings.json assembled from defaults"
-    else
-        fail "claude settings.json not assembled" "got: $claude_settings"
-    fi
-
-    claude_mcp=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-        -v "${claude_data_dir}:${CONTAINER_HOME}/.claude/:rw" \
-        -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-        -e "HOME=${CONTAINER_HOME}" \
-        -e "AGENT=claude" \
-        -e "AGENT_CONFIG_DIR=.claude" \
-        -e "PROJECT_NAME=${PROJECT_NAME}" \
-        -w "${SCRIPT_DIR}" \
-        "${IMAGE_NAME}" \
-        jq -r '.mcpServers | keys[0]' "${CONTAINER_HOME}/.claude/mcp-config.json" 2>/dev/null || echo "")
-
-    if [[ -n "$claude_mcp" && "$claude_mcp" != "null" ]]; then
-        pass "claude mcp-config.json assembled from defaults"
-    else
-        fail "claude mcp-config.json not assembled" "got: $claude_mcp"
-    fi
-
-    # ── Codex config assembly ────────────────────────────────────────────
-
-    section "Codex config assembly"
-
-    codex_data_dir="${CONFIG_DIR}/codex"
-    mkdir -p "${codex_data_dir}"
-
-    codex_config=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
-        -v "${codex_data_dir}:${CONTAINER_HOME}/.codex/:rw" \
-        -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
-        -e "HOME=${CONTAINER_HOME}" \
-        -e "AGENT=codex" \
-        -e "AGENT_CONFIG_DIR=.codex" \
-        -e "PROJECT_NAME=${PROJECT_NAME}" \
-        -w "${SCRIPT_DIR}" \
-        "${IMAGE_NAME}" \
-        bash -c "cat ${CONTAINER_HOME}/.codex/config.toml" 2>/dev/null || echo "")
-
-    if echo "$codex_config" | grep -q "approval_policy"; then
-        pass "codex config.toml assembled from defaults"
-    else
-        fail "codex config.toml not assembled" "got: $codex_config"
-    fi
-
     # ── Per-agent auth warnings ──────────────────────────────────────────
 
     section "Per-agent auth (checkhealth)"
 
     # Claude without ANTHROPIC_API_KEY should warn, not fail
+    claude_data_dir="${CONFIG_DIR}/claude"
+    mkdir -p "${claude_data_dir}"
     claude_auth_output=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
         -v "${claude_data_dir}:${CONTAINER_HOME}/.claude/:rw" \
         -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
@@ -446,6 +264,8 @@ if $RUN_INTEGRATION; then
     fi
 
     # Codex without OPENAI_API_KEY should warn, not fail
+    codex_data_dir="${CONFIG_DIR}/codex"
+    mkdir -p "${codex_data_dir}"
     codex_auth_output=$(timeout "${TIMEOUT}" "$ENGINE" run --rm $(engine_userns_flags) \
         -v "${codex_data_dir}:${CONTAINER_HOME}/.codex/:rw" \
         -v "${SCRIPT_DIR}:${SCRIPT_DIR}:rw" \
@@ -924,12 +744,23 @@ if $RUN_UNIT; then
     section "update-agents"
 
     # No image present → dry-run reports the build-first hint.
-    ua_no_image=$(timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+    # Use a fake engine that always reports no image so this works even when
+    # the real engine has the base image cached from earlier tests.
+    fake_no_image="${CONFIG_DIR}/.fake-no-image-${RANDOM}"
+    mkdir -p "$fake_no_image"
+    cat >"${fake_no_image}/engine" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "${fake_no_image}/engine"
+    ua_no_image=$(CONTAINER_ENGINE="${fake_no_image}/engine" PATH="${fake_no_image}:$PATH" \
+        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
     if echo "$ua_no_image" | grep -q "would fall through to 'aidock build'"; then
         pass "update-agents dry-run reports build-first when no image"
     else
         fail "update-agents dry-run reports build-first when no image" "got: $ua_no_image"
     fi
+    rm -rf "$fake_no_image"
 
     # Fake a base image so dry-run shows the update plan.
     fake_base="${CONFIG_DIR}/.fake-image-${RANDOM}"
@@ -1128,6 +959,33 @@ EOF
     fi
 
     rm -rf "$smoke_dir" "$smoke_cfg"
+
+    # ── Hidden subcommand guards ──────────────────────────────────────
+    section "Hidden subcommand guards"
+
+    # __checkhealth on the host (no AGENT env) should fail predictably,
+    # not silently succeed. This protects the in-container assumption.
+    hh_out=$(
+        unset AGENT
+        "${LAUNCHER}" __checkhealth 2>&1 || true
+    )
+    if echo "$hh_out" | grep -qi "AGENT"; then
+        pass "__checkhealth requires AGENT env var"
+    else
+        fail "__checkhealth requires AGENT env var" "got: $hh_out"
+    fi
+
+    # __init-home on the host (no required env) should fail, not exec
+    # an arbitrary command in the user's shell.
+    ih_out=$(
+        unset PROJECT_NAME CONTAINER_HOME 2>/dev/null
+        "${LAUNCHER}" __init-home /bin/true 2>&1 || true
+    )
+    if [[ -n "$ih_out" ]] && ! echo "$ih_out" | grep -q "would have exec"; then
+        pass "__init-home guards required env vars"
+    else
+        fail "__init-home guards required env vars" "got: $ih_out"
+    fi
 
 fi # end $RUN_UNIT
 

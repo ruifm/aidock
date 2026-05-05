@@ -604,10 +604,13 @@ seed_default_file Containerfile
 # Sweep stale heredoc-era support files (no-op for fresh installs).
 rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"
 
-# The launcher itself is COPYed into the image as the entrypoint host. Refresh
-# it on every run so the build context always has the current bytes.
-cp "$0" "${BUILD_DIR}/aidock"
-chmod +x "${BUILD_DIR}/aidock"
+# The launcher itself is COPYed into the image as the entrypoint host. Only
+# refresh the staged copy when the source bytes actually changed; otherwise
+# touching the file would invalidate the rebuild-detection mtime check.
+if ! cmp -s "$0" "${BUILD_DIR}/aidock" 2>/dev/null; then
+    cp "$0" "${BUILD_DIR}/aidock"
+    chmod +x "${BUILD_DIR}/aidock"
+fi
 
 # ── Seed aidock.conf with built-in defaults ─────────────────────────
 # Plain KEY=VALUE, sourced as bash. CLI flags override these.
