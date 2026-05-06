@@ -286,7 +286,6 @@ Commands:
   clean          Remove image, config, and dangling layers
   shell          Open a debug shell in container
   info           Show engine, image, and agent info
-  reset-build    Re-seed Containerfile/aidock from defaults (next run rebuilds)
   drop-session   Remove this CWD's session image + record (next run uses base)
   purge          Delete config + session data (with confirmation)
   list-sessions  List recorded per-CWD sessions
@@ -326,7 +325,6 @@ Examples:
   ${0##*/} info                      # Show diagnostic info
   ${0##*/} purge -a claude --force  # Delete all claude config + session data
   ${0##*/} drop-session              # Reset this CWD's session image to base
-  ${0##*/} reset-build                # Re-seed Containerfile from defaults
   ${0##*/} --no-cache                 # Force a no-cache base image rebuild
   ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
   ${0##*/} -- --help                 # Show agent's own help
@@ -906,7 +904,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run update update-agents clean shell info reset-build drop-session purge list-sessions prune"
+readonly AVAILABLE_COMMANDS="run update update-agents clean shell info drop-session purge list-sessions prune"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -1146,32 +1144,6 @@ fi
 
 SESSION_HASH=$(compute_session_hash "$MOUNT_DIR")
 SESSION_IMAGE_NAME=$(session_image_name "$SESSION_HASH")
-
-# ── Handle reset-build (early exit) ─────────────────────────────────
-# Re-seeds Containerfile and the launcher copy from defaults, clearing
-# the build marker so the next run rebuilds. Session data and committed
-# session images are untouched.
-
-if [[ "$RUN_MODE" == "reset-build" ]]; then
-    if [[ "$AGENT_EXPLICIT" == "true" ]]; then
-        die "reset-build does not accept --agent (use 'purge --agent X' to nuke per-agent data)"
-    fi
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would re-seed: ${BUILD_DIR}/Containerfile from defaults"
-        echo "[dry-run] Would copy:    $0 -> ${BUILD_DIR}/aidock"
-        echo "[dry-run] Would remove:  ${CONFIG_DIR}/.last-build"
-        exit 0
-    fi
-    seed_default_file Containerfile force
-    rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"
-    cp "$0" "${BUILD_DIR}/aidock"
-    chmod +x "${BUILD_DIR}/aidock"
-    rm -f "${CONFIG_DIR}/.last-build"
-    echo "Reset build files from defaults (session data preserved)."
-    echo "Config dir: ${CONFIG_DIR}/"
-    echo "Rebuild will be triggered on next run."
-    exit 0
-fi
 
 # ── Handle drop-session (early exit) ────────────────────────────────
 # Removes this CWD's committed session image and the session record.
@@ -1547,7 +1519,6 @@ fi
 
 if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
     echo "First run. Containerfile: ${BUILD_DIR}/Containerfile"
-    echo "Edit files to customize. Use 'reset-build' to restore defaults."
 fi
 
 # ── Assemble mounts ─────────────────────────────────────────────────

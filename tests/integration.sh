@@ -1027,37 +1027,6 @@ EOF
     # Clean up the edit
     sed -i '/# user customization/d' "${CONFIG_DIR}/Containerfile"
 
-    # reset-build should overwrite build files with defaults
-    echo "# user customization for reset test" >>"${CONFIG_DIR}/Containerfile"
-    timeout "${TIMEOUT}" "${LAUNCHER}" reset-build >/dev/null 2>&1
-    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && ! grep -q "# user customization for reset test" "${CONFIG_DIR}/Containerfile"; then
-        pass "reset-build overwrites build files with defaults"
-    else
-        fail "reset-build overwrites build files with defaults" "customization still present or Containerfile missing"
-    fi
-
-    # .last-build should be removed (triggers rebuild)
-    if [[ ! -f "${CONFIG_DIR}/.last-build" ]]; then
-        pass "reset-build removes .last-build marker"
-    else
-        fail "reset-build removes .last-build marker"
-    fi
-
-    # Build files should still exist (overwritten, not deleted)
-    if [[ -f "${CONFIG_DIR}/Containerfile" ]] && [[ -f "${CONFIG_DIR}/aidock" ]]; then
-        pass "build files present after reset-build"
-    else
-        fail "build files present after reset-build" "Containerfile or aidock missing"
-    fi
-
-    # reset-build rejects --agent
-    rb_agent=$(timeout "${TIMEOUT}" "${LAUNCHER}" reset-build --agent codex 2>&1 || true)
-    if echo "$rb_agent" | grep -q "does not accept --agent"; then
-        pass "reset-build rejects --agent"
-    else
-        fail "reset-build rejects --agent" "got: $rb_agent"
-    fi
-
     # --info should show Containerfile path
     info_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
     if echo "$info_output" | grep -q "Containerfile:"; then
