@@ -434,34 +434,34 @@ if $RUN_UNIT; then
 
     section "Default agent preference"
 
-    # default-agent file changes the agent
-    echo "claude" >"${CONFIG_DIR}/default-agent"
+    # default_agent in aidock.conf changes the agent
+    echo "default_agent=claude" >"${CONFIG_DIR}/aidock.conf"
     default_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild 2>&1)
-    rm -f "${CONFIG_DIR}/default-agent"
+    rm -f "${CONFIG_DIR}/aidock.conf"
     if echo "$default_dry" | grep -q "AGENT=claude"; then
-        pass "default-agent file selects claude"
+        pass "aidock.conf default_agent selects claude"
     else
-        fail "default-agent file selects claude" "got: $(echo "$default_dry" | grep -o 'AGENT=[^ ]*')"
+        fail "aidock.conf default_agent selects claude" "got: $(echo "$default_dry" | grep -o 'AGENT=[^ ]*')"
     fi
 
-    # --agent overrides default-agent file
-    echo "claude" >"${CONFIG_DIR}/default-agent"
+    # --agent overrides aidock.conf default_agent
+    echo "default_agent=claude" >"${CONFIG_DIR}/aidock.conf"
     override_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent copilot 2>&1)
-    rm -f "${CONFIG_DIR}/default-agent"
+    rm -f "${CONFIG_DIR}/aidock.conf"
     if echo "$override_dry" | grep -q "AGENT=copilot"; then
-        pass "--agent overrides default-agent file"
+        pass "--agent overrides aidock.conf default_agent"
     else
-        fail "--agent overrides default-agent file" "got: $(echo "$override_dry" | grep -o 'AGENT=[^ ]*')"
+        fail "--agent overrides aidock.conf default_agent" "got: $(echo "$override_dry" | grep -o 'AGENT=[^ ]*')"
     fi
 
-    # Invalid default-agent file is caught
-    echo "invalid-agent" >"${CONFIG_DIR}/default-agent"
+    # Invalid default_agent in aidock.conf is caught
+    echo "default_agent=invalid-agent" >"${CONFIG_DIR}/aidock.conf"
     invalid_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild 2>&1 || true)
-    rm -f "${CONFIG_DIR}/default-agent"
+    rm -f "${CONFIG_DIR}/aidock.conf"
     if echo "$invalid_output" | grep -q "unknown agent"; then
-        pass "invalid default-agent file caught"
+        pass "invalid default_agent caught"
     else
-        fail "invalid default-agent file caught" "got: $invalid_output"
+        fail "invalid default_agent caught" "got: $invalid_output"
     fi
 
     # ── Agent auth probe (Phase H) ──────────────────────────────────────
@@ -498,15 +498,15 @@ if $RUN_UNIT; then
         fail "shell mode continues despite missing auth" "got: $shell_output"
     fi
 
-    # default-agent file unconfigured → also dies in run mode.
-    echo "claude" >"${CONFIG_DIR}/default-agent"
+    # default_agent in aidock.conf with no auth → also dies in run mode.
+    echo "default_agent=claude" >"${CONFIG_DIR}/aidock.conf"
     file_no_auth=$(env -u ANTHROPIC_API_KEY HOME="${TEST_TMPDIR}" \
         timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild 2>&1 || true)
-    rm -f "${CONFIG_DIR}/default-agent"
+    rm -f "${CONFIG_DIR}/aidock.conf"
     if echo "$file_no_auth" | grep -q "agent 'claude' is not configured"; then
-        pass "default-agent file with no auth dies"
+        pass "aidock.conf default_agent with no auth dies"
     else
-        fail "default-agent file with no auth dies" "got: $file_no_auth"
+        fail "aidock.conf default_agent with no auth dies" "got: $file_no_auth"
     fi
 
     # Restore env for subsequent tests.
@@ -1069,31 +1069,20 @@ EOF
     fi
     rm -rf "${hcfg_tmp}"
 
-    # ── container.conf ────────────────────────────────────────────────
-    section "container.conf extra args"
+    # ── aidock.conf extra_container_args ──────────────────────────────
+    section "aidock.conf extra_container_args"
 
-    # When container.conf has args, info subcommand stays quiet (no notice
-    # in info/check), but a normal --dry-run run prints the [info] notice.
     mkdir -p "${CONFIG_DIR}"
-    cat >"${CONFIG_DIR}/container.conf" <<'EOF'
---publish=3000:3000
-# comment line
---env=FOO=bar
+    cat >"${CONFIG_DIR}/aidock.conf" <<'EOF'
+extra_container_args=(--publish=3000:3000 --env=FOO=bar)
 EOF
     cc_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" --dry-run --agent copilot 2>&1 || true)
-    if echo "$cc_out" | grep -q "applied 2 extra container args from"; then
-        pass "container.conf prints [info] applied N notice"
+    if echo "$cc_out" | grep -q -- "--publish=3000:3000" && echo "$cc_out" | grep -q -- "--env=FOO=bar"; then
+        pass "aidock.conf extra_container_args appended to engine run"
     else
-        fail "container.conf prints [info] applied N notice" "got: $cc_out"
+        fail "aidock.conf extra_container_args appended to engine run" "got: $cc_out"
     fi
-
-    cc_info=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1 || true)
-    if ! echo "$cc_info" | grep -q "applied .* extra container args"; then
-        pass "container.conf notice suppressed in info mode"
-    else
-        fail "container.conf notice suppressed in info mode" "got: $cc_info"
-    fi
-    rm -f "${CONFIG_DIR}/container.conf"
+    rm -f "${CONFIG_DIR}/aidock.conf"
 
 fi # end $RUN_UNIT
 

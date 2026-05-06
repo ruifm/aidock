@@ -768,30 +768,30 @@ fi
 
 # ── aidock.conf (optional) ───────────────────────────────────────────
 # Plain bash; sourced if present. Built-in defaults below; CLI flags win.
+#
+# Recognised keys:
+#   default_agent          string, default ""        (empty → prompt picker)
+#   commit_on_exit         always|prompt|never       (default: always)
+#   extra_container_args   bash array of engine args (default: ())
 AIDOCK_CONF="${CONFIG_DIR}/aidock.conf"
+default_agent=""
 commit_on_exit="always"
+extra_container_args=()
 # shellcheck disable=SC1090
 [[ -f "$AIDOCK_CONF" ]] && source "$AIDOCK_CONF"
 
 # ── Parse arguments ──────────────────────────────────────────────────
 
-# Read default agent preference (file contains a single agent name)
-DEFAULT_AGENT_FILE="${CONFIG_DIR}/default-agent"
 AGENT=""
 AGENT_RESOLVED=false
-if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
-    default_agent=$(<"$DEFAULT_AGENT_FILE")
-    default_agent="${default_agent%%[[:space:]]}" # trim trailing whitespace
-    default_agent="${default_agent##[[:space:]]}" # trim leading whitespace
-    if [[ -n "$default_agent" ]]; then
-        AGENT="$default_agent"
-        AGENT_RESOLVED=true
-    fi
+if [[ -n "$default_agent" ]]; then
+    AGENT="$default_agent"
+    AGENT_RESOLVED=true
 fi
 
 RUN_MODE="run"
 AGENT_ARGS=()
-EXTRA_CONTAINER_ARGS=()
+EXTRA_CONTAINER_ARGS=("${extra_container_args[@]}")
 DRY_RUN=false
 BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
@@ -965,7 +965,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Validate agent name (covers default-agent file and --agent flag)
+# Validate agent name (covers aidock.conf default_agent and --agent flag)
 if [[ "$AGENT_RESOLVED" == "true" ]]; then
     validate_agent "$AGENT"
 fi
@@ -1005,7 +1005,7 @@ agent_picker_run() {
             if [[ ! -t 0 ]]; then
                 {
                     echo "error: multiple agents configured on this host but no TTY for picker"
-                    echo "  set -a <agent>, write a name to ~/.config/aidock/default-agent, or run with a TTY"
+                    echo "  set -a <agent>, set default_agent in ~/.config/aidock/aidock.conf, or run with a TTY"
                     echo "configured agents: ${configured[*]}"
                 } >&2
                 exit 2
@@ -1060,7 +1060,7 @@ fi
 
 # ── Agent auth check (run/shell only) ────────────────────────────────
 # When the user has explicitly chosen an agent (via --agent or the
-# default-agent file), require host auth. shell mode is a debug escape
+# aidock.conf default_agent), require host auth. shell mode is a debug escape
 # hatch — warn instead of dying. The picker above guarantees a configured
 # agent in run mode, so this is a no-op in that path.
 if [[ "$AGENT_RESOLVED" == "true" ]]; then
@@ -1565,24 +1565,6 @@ case "$AGENT" in
         ;;
 esac
 
-# ── Extra engine args from config file ────────────────────────────────
-
-CONTAINER_CONF="${CONFIG_DIR}/container.conf"
-if [[ -f "$CONTAINER_CONF" ]]; then
-    _conf_args_before=${#EXTRA_CONTAINER_ARGS[@]}
-    while IFS= read -r line; do
-        # Skip empty lines and comments
-        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Split line into words (handles "flag value" pairs like "-v /a:/b:rw")
-        read -ra args <<<"$line"
-        EXTRA_CONTAINER_ARGS+=("${args[@]}")
-    done <"$CONTAINER_CONF"
-    _conf_args_added=$((${#EXTRA_CONTAINER_ARGS[@]} - _conf_args_before))
-    if ((_conf_args_added > 0)) && [[ "$RUN_MODE" != "info" && "$RUN_MODE" != "__check" ]]; then
-        echo "[info] applied ${_conf_args_added} extra container args from ${CONTAINER_CONF}" >&2
-    fi
-fi
-
 # ── Run ──────────────────────────────────────────────────────────────
 
 if [[ "${RUN_MODE}" == "info" ]]; then
@@ -1616,10 +1598,10 @@ if [[ "${RUN_MODE}" == "info" ]]; then
     echo "Active image:  ${ACTIVE_IMAGE}"
     echo "Commit policy: ${COMMIT_POLICY} (commit_on_exit)"
     echo "Agent:         ${AGENT}"
-    if [[ -f "$DEFAULT_AGENT_FILE" ]]; then
-        echo "Default agent: $(<"$DEFAULT_AGENT_FILE") (from ${DEFAULT_AGENT_FILE})"
+    if [[ -n "$default_agent" ]]; then
+        echo "Default agent: ${default_agent} (from ${AIDOCK_CONF})"
     else
-        echo "Default agent: copilot (built-in default)"
+        echo "Default agent: (none configured — use -a/--agent or set default_agent in aidock.conf)"
     fi
     echo "Config dir:    ${CONFIG_DIR}/"
     echo "Containerfile: inline (use 'aidock --emit-default Containerfile' to inspect)"
