@@ -322,13 +322,6 @@ if $RUN_UNIT; then
         pass "run --dry-run omits --rm"
     fi
 
-    # run dry-run advertises commit_on_exit policy
-    if echo "$dry_output" | grep -q '\[dry-run\] commit_on_exit='; then
-        pass "run --dry-run shows commit policy hint"
-    else
-        fail "run --dry-run shows commit policy hint" "got: $dry_output"
-    fi
-
     # run dry-run shows the per-session lockfile path
     if echo "$dry_output" | grep -q 'session_lock=.*sessions/[0-9a-f]\+\.lock'; then
         pass "run --dry-run shows session lock path"
@@ -342,12 +335,6 @@ if $RUN_UNIT; then
         pass "check --dry-run keeps --rm"
     else
         fail "check --dry-run keeps --rm" "got: $check_dry"
-    fi
-
-    if echo "$check_dry" | grep -q '\[dry-run\] commit_on_exit='; then
-        fail "check --dry-run does not advertise commit" "got: $check_dry"
-    else
-        pass "check --dry-run does not advertise commit"
     fi
 
     # NO_UPDATE_NOTIFIER / COPILOT_AUTO_UPDATE were dropped along with
@@ -618,70 +605,6 @@ if $RUN_UNIT; then
     else
         fail "session hash is deterministic for the same CWD" "hash1=$hash1 hash2=$hash2"
     fi
-
-    # ── commit_on_exit policy ────────────────────────────────────────────
-
-    section "commit_on_exit policy"
-
-    info_default=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
-    if echo "$info_default" | grep -q "Commit policy: always"; then
-        pass "default commit policy is 'always' when no aidock.conf"
-    else
-        fail "default commit policy is 'always' when no aidock.conf" "got: $info_default"
-    fi
-
-    if [[ -f "${CONFIG_DIR}/aidock.conf" ]]; then
-        fail "aidock.conf not seeded automatically" "found at ${CONFIG_DIR}/aidock.conf"
-    else
-        pass "aidock.conf not seeded automatically"
-    fi
-
-    # CLI override (--commit=prompt) wins over conf
-    info_override=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent copilot --commit=prompt 2>&1 || true)
-    # info doesn't accept --commit, so use run --dry-run; we just need to verify
-    # the parser accepts the flag without error
-    if echo "$info_override" | grep -qE "(Would run|aidock-)"; then
-        pass "--commit=prompt accepted on 'run' subcommand"
-    else
-        fail "--commit=prompt accepted on 'run' subcommand" "got: $info_override"
-    fi
-
-    # User-created conf overrides default
-    echo "commit_on_exit=never" >"${CONFIG_DIR}/aidock.conf"
-    info_never=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
-    if echo "$info_never" | grep -q "Commit policy: never"; then
-        pass "aidock.conf overrides default"
-    else
-        fail "aidock.conf overrides default" "got: $info_never"
-    fi
-
-    # CLI flag wins over conf
-    info_cli_wins=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --commit always 2>&1 || true)
-    # We can't easily inspect dry-run policy; assert the flag is accepted (no error)
-    if ! echo "$info_cli_wins" | grep -qi "error"; then
-        pass "--commit always accepted (CLI overrides conf)"
-    else
-        fail "--commit always accepted (CLI overrides conf)" "got: $info_cli_wins"
-    fi
-
-    # Invalid value rejected
-    bad_value=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --commit=bogus 2>&1 || true)
-    if echo "$bad_value" | grep -q "must be one of: always, prompt, never"; then
-        pass "--commit rejects invalid value"
-    else
-        fail "--commit rejects invalid value" "got: $bad_value"
-    fi
-
-    # --commit not allowed on other subcommands
-    bad_subcmd=$(timeout "${TIMEOUT}" "${LAUNCHER}" info --commit=always 2>&1 || true)
-    if echo "$bad_subcmd" | grep -q "only valid with"; then
-        pass "--commit rejected on non-run/shell subcommands"
-    else
-        fail "--commit rejected on non-run/shell subcommands" "got: $bad_subcmd"
-    fi
-
-    # Cleanup user-created conf
-    rm -f "${CONFIG_DIR}/aidock.conf"
 
     # ── list-sessions ────────────────────────────────────────────────────
 

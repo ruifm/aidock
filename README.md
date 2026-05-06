@@ -72,7 +72,7 @@ aidock [command] [options] [-- agent-args...]
 | `drop-session` | Drop this CWD's session image (next run uses base) |
 | `prune` | Show (or remove with `--orphans`) sessions whose CWD is gone |
 
-Common flags: `-a/--agent NAME`, `-n/--dry-run`, `--no-cache`, `--commit always|prompt|never`.
+Common flags: `-a/--agent NAME`, `-n/--dry-run`, `--no-cache`.
 
 ## Configuration
 
@@ -81,12 +81,6 @@ A single optional file: `~/.config/aidock/aidock.conf` (bash-sourced).
 ```bash
 # Default agent if -a is omitted; empty → prompt picker.
 default_agent=copilot
-
-# Behavior when the container's filesystem changed at exit:
-#   always  Commit the change to this project's session image. (default)
-#   prompt  Ask interactively (10s timeout; Enter commits, timeout discards).
-#   never   Discard changes (back to base on next run).
-commit_on_exit=always
 
 # Extra args appended to every `engine run` (mounts, ports, env).
 extra_container_args=(-v "$HOME/.foo:/root/.foo:ro" --publish=3000:3000)
@@ -115,7 +109,7 @@ Each `aidock` invocation:
 1. Hashes the current working directory.
 2. Picks the image: `<project>-session-<hash>:latest` if it exists, else `<project>-base:latest` (built on first run).
 3. Launches a container with your project bind-mounted at the same absolute path, the agent's allowlisted host config files mounted in, and auth tokens forwarded.
-4. On exit, diffs the container; if anything changed, applies `commit_on_exit` (commit / prompt / never).
+4. On exit, diffs the container; if anything changed, commits the diff to the project's session image so installs and configs survive into the next run.
 
 Agent CLIs (`copilot`, `claude`, `codex`) live in a shared `aidock-agents` named volume mounted at `/opt/aidock/agents`, so `aidock update` refreshes them globally for every project at once. Per-project chat history and downloaded data stay inside that project's session image — different projects don't see each other's session pickers.
 

@@ -299,8 +299,6 @@ Options:
 
 Command-specific options:
   run:           --no-rebuild  Skip auto-rebuild check
-                 --commit POLICY  Override commit_on_exit (always|prompt|never)
-  shell:         --commit POLICY  Override commit_on_exit (always|prompt|never)
   purge:         --force       Skip confirmation prompt (for scripting)
                  -a, --agent NAME  Restrict purge to one agent's data dir
   prune:         --orphans     Actually remove orphan sessions (default: dry-run)
@@ -312,7 +310,6 @@ Agent args:
 Configuration:
   \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/aidock.conf  (optional; bash-sourced)
     default_agent          # default agent if -a omitted (default: prompt)
-    commit_on_exit         # always | prompt | never (default: always)
     extra_container_args   # bash array of extra engine run args
 
 Examples:
@@ -417,10 +414,9 @@ engine_run() {
 }
 
 # engine_run_committing runs the container without --rm, waits for it
-# to exit, and then applies the COMMIT_POLICY: empty diff or 'never'
-# discards; 'always' commits to SESSION_IMAGE_NAME; 'prompt' asks the
-# user with a 10s default-yes timeout. Always removes the container
-# afterwards. Exits with the container's exit code.
+# to exit, and then commits any filesystem changes to SESSION_IMAGE_NAME
+# so installs/configs survive into the next session. Always removes the
+# container afterwards. Exits with the container's exit code.
 #
 # Callers must NOT pass --rm; this function manages container lifetime.
 engine_run_committing() {
@@ -436,7 +432,7 @@ engine_run_committing() {
         cmd=$(printf '%q ' "$ENGINE" run "${userns_flag[@]}" "$@")
         cmd=$(echo "$cmd" | sed -E 's/(GH_TOKEN=|ANTHROPIC_API_KEY=|OPENAI_API_KEY=)[^ ]*/\1***REDACTED***/g')
         echo "$cmd"
-        echo "[dry-run] commit_on_exit=${COMMIT_POLICY} (would commit non-empty diff to ${SESSION_IMAGE_NAME})"
+        echo "[dry-run] would commit non-empty diff to ${SESSION_IMAGE_NAME}"
         echo "[dry-run] session_lock=${SESSION_DIR}/${SESSION_HASH}.lock"
         exit 0
     fi
@@ -444,7 +440,7 @@ engine_run_committing() {
     _acquire_session_lock
     local rc=0
     "$ENGINE" run "${userns_flag[@]}" "$@" || rc=$?
-    _maybe_commit_container "$CONTAINER_NAME" "$rc"
+    _commit_container_changes "$CONTAINER_NAME"
     exit "$rc"
 }
 
@@ -557,14 +553,11 @@ _seed_agents_volume() {
         -c "npm install -g ${pkgs[*]} && npm cache clean --force"
 }
 
-# Inspect $1 (container name) for filesystem changes, and depending on
-# $COMMIT_POLICY commit them to $SESSION_IMAGE_NAME or discard them.
-# Always rm's the container at the end. $2 is the container exit code,
-# used only to skip prompts on signal-style exits if needed in future.
-_maybe_commit_container() {
+# Inspect $1 (container name) for filesystem changes and commit any
+# non-empty diff to $SESSION_IMAGE_NAME so installs/configs persist into
+# the next session. Always removes the container afterwards.
+_commit_container_changes() {
     local cname="$1"
-    # Capture diff (ignored when policy is never; cheap so we run it anyway
-    # for reporting consistency in always/prompt).
     local changed_lines=0
     local diff_out=""
     if "$ENGINE" container exists "$cname" 2>/dev/null ||
@@ -575,53 +568,13 @@ _maybe_commit_container() {
         changed_lines=$(printf '%s\n' "$diff_out" | wc -l)
     fi
 
-    local should_commit=false
-    if [[ "$changed_lines" -eq 0 ]]; then
-        :
-    else
-        case "$COMMIT_POLICY" in
-            always) should_commit=true ;;
-            never) should_commit=false ;;
-            prompt)
-                if _prompt_commit "$changed_lines"; then
-                    should_commit=true
-                fi
-                ;;
-        esac
-    fi
-
-    if [[ "$should_commit" == "true" ]]; then
+    if [[ "$changed_lines" -gt 0 ]]; then
         echo "Committing ${changed_lines} filesystem changes to ${SESSION_IMAGE_NAME}..." >&2
         "$ENGINE" commit "$cname" "$SESSION_IMAGE_NAME" >/dev/null
         "$ENGINE" image prune -f >/dev/null 2>&1 || true
     fi
 
     "$ENGINE" rm -f "$cname" >/dev/null 2>&1 || true
-}
-
-# Ask "commit? [Y/n]" with a 10s timeout. Returns 0=commit, 1=discard.
-# Empty/Enter still defaults to yes; the *timeout* fallback now defaults
-# to no so an unattended terminal doesn't accumulate session images
-# silently. Non-tty stdin defaults to yes (automation-style).
-_prompt_commit() {
-    local n="$1"
-    if [[ ! -t 0 ]]; then
-        echo "Container changed ${n} paths; committing (non-interactive default)." >&2
-        return 0
-    fi
-    echo "" >&2
-    echo "Container changed ${n} paths." >&2
-    local reply=""
-    if read -r -t 10 -p "Commit to ${SESSION_IMAGE_NAME}? [Y/n] " reply </dev/tty 2>/dev/null; then
-        case "${reply,,}" in
-            n | no) return 1 ;;
-            *) return 0 ;;
-        esac
-    else
-        echo "" >&2
-        echo "(timeout — defaulting to no)" >&2
-        return 1
-    fi
 }
 
 # ── Derived paths ────────────────────────────────────────────────────
@@ -769,11 +722,9 @@ fi
 #
 # Recognised keys:
 #   default_agent          string, default ""        (empty → prompt picker)
-#   commit_on_exit         always|prompt|never       (default: always)
 #   extra_container_args   bash array of engine args (default: ())
 AIDOCK_CONF="${CONFIG_DIR}/aidock.conf"
 default_agent=""
-commit_on_exit="always"
 extra_container_args=()
 # shellcheck disable=SC1090
 [[ -f "$AIDOCK_CONF" ]] && source "$AIDOCK_CONF"
@@ -795,7 +746,6 @@ BUILD_OVERRIDE=""
 AGENT_EXPLICIT=false
 FORCE=false
 PRUNE_ORPHANS=false
-COMMIT_POLICY_OVERRIDE=""
 
 readonly VERSION="0.2.0"
 
@@ -929,24 +879,6 @@ while [[ $# -gt 0 ]]; do
             [[ "$RUN_MODE" == "prune" ]] || die "--orphans is only valid with the 'prune' command"
             PRUNE_ORPHANS=true
             shift
-            ;;
-        --commit | --commit=*)
-            case "$RUN_MODE" in
-                run | shell) ;;
-                *) die "--commit is only valid with the 'run' or 'shell' command" ;;
-            esac
-            if [[ "$1" == --commit=* ]]; then
-                value="${1#--commit=}"
-                shift
-            else
-                [[ $# -ge 2 ]] || die "--commit requires a value (always|prompt|never)"
-                value="$2"
-                shift 2
-            fi
-            case "$value" in
-                always | prompt | never) COMMIT_POLICY_OVERRIDE="$value" ;;
-                *) die "--commit value must be one of: always, prompt, never (got '${value}')" ;;
-            esac
             ;;
         --)
             shift
@@ -1090,17 +1022,6 @@ if [[ "$AGENT_RESOLVED" != "true" ]]; then
     AGENT="copilot"
     validate_agent "$AGENT"
 fi
-
-# ── Resolve commit_on_exit policy (CLI flag wins over conf file) ────
-
-if [[ -n "$COMMIT_POLICY_OVERRIDE" ]]; then
-    commit_on_exit="$COMMIT_POLICY_OVERRIDE"
-fi
-case "$commit_on_exit" in
-    always | prompt | never) ;;
-    *) die "invalid commit_on_exit '${commit_on_exit}' (must be: always, prompt, never)" ;;
-esac
-readonly COMMIT_POLICY="$commit_on_exit"
 
 # ── Determine mount root (git toplevel or CWD) ──────────────────────
 # Computed early so session identity is available to every subcommand.
@@ -1594,7 +1515,6 @@ if [[ "${RUN_MODE}" == "info" ]]; then
     fi
     echo "Session hash:  ${SESSION_HASH} (CWD: ${MOUNT_DIR})"
     echo "Active image:  ${ACTIVE_IMAGE}"
-    echo "Commit policy: ${COMMIT_POLICY} (commit_on_exit)"
     echo "Agent:         ${AGENT}"
     if [[ -n "$default_agent" ]]; then
         echo "Default agent: ${default_agent} (from ${AIDOCK_CONF})"
