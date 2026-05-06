@@ -285,7 +285,6 @@ Commands:
   update-agents  Reinstall AI agents in the shared agents volume (global)
   clean          Remove image, config, and dangling layers
   shell          Open a debug shell in container
-  check          Run container healthcheck
   info           Show engine, image, and agent info
   reset-build    Re-seed Containerfile/aidock from defaults (next run rebuilds)
   drop-session   Remove this CWD's session image + record (next run uses base)
@@ -324,7 +323,6 @@ Examples:
   ${0##*/}                           # Run default agent (copilot)
   ${0##*/} -a claude                 # Run Claude Code
   ${0##*/} shell                     # Debug shell
-  ${0##*/} check                     # Healthcheck
   ${0##*/} info                      # Show diagnostic info
   ${0##*/} purge -a claude --force  # Delete all claude config + session data
   ${0##*/} drop-session              # Reset this CWD's session image to base
@@ -908,7 +906,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run update update-agents clean shell check info reset-build drop-session purge list-sessions prune"
+readonly AVAILABLE_COMMANDS="run update update-agents clean shell info reset-build drop-session purge list-sessions prune"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -916,6 +914,8 @@ if [[ $# -gt 0 && "$1" != -* ]]; then
     for c in $AVAILABLE_COMMANDS; do
         [[ "$c" == "$cmd" ]] && valid=true && break
     done
+    # Hidden subcommands (used by tests / internals; not advertised)
+    [[ "$cmd" == "__check" ]] && valid=true
     if $valid; then
         RUN_MODE="$cmd"
         shift
@@ -1672,7 +1672,7 @@ if [[ -f "$CONTAINER_CONF" ]]; then
         EXTRA_CONTAINER_ARGS+=("${args[@]}")
     done <"$CONTAINER_CONF"
     _conf_args_added=$((${#EXTRA_CONTAINER_ARGS[@]} - _conf_args_before))
-    if ((_conf_args_added > 0)) && [[ "$RUN_MODE" != "info" && "$RUN_MODE" != "check" ]]; then
+    if ((_conf_args_added > 0)) && [[ "$RUN_MODE" != "info" && "$RUN_MODE" != "__check" ]]; then
         echo "[info] applied ${_conf_args_added} extra container args from ${CONTAINER_CONF}" >&2
     fi
 fi
@@ -1730,7 +1730,7 @@ if [[ "${RUN_MODE}" == "info" ]]; then
     exit 0
 fi
 
-if [[ "${RUN_MODE}" == "check" ]]; then
+if [[ "${RUN_MODE}" == "__check" ]]; then
     engine_run \
         --rm \
         --name "${CONTAINER_NAME}" \

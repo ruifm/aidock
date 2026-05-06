@@ -105,7 +105,7 @@ run_in_container() {
 # Returns only healthcheck output (lines after the last "Building" block).
 run_launcher_check() {
     local raw rc
-    raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" check 2>&1) && rc=0 || rc=$?
+    raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" __check 2>&1) && rc=0 || rc=$?
     # If a build triggered, strip everything up to and including the COMMIT line
     if echo "$raw" | grep -q "^Building "; then
         echo "$raw" | sed -n '/^COMMIT /,$ { /^COMMIT /d; p; }'
@@ -203,8 +203,8 @@ if $RUN_INTEGRATION; then
         # Running the launcher twice should NOT trigger a rebuild the second time.
         # We capture raw output (not filtered) to check for the "Building" message.
 
-        timeout "${TIMEOUT}" "${LAUNCHER}" check >/dev/null 2>&1
-        second_raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" check 2>&1)
+        timeout "${TIMEOUT}" "${LAUNCHER}" __check >/dev/null 2>&1
+        second_raw=$(timeout "${TIMEOUT}" "${LAUNCHER}" __check 2>&1)
 
         if echo "$second_raw" | grep -q "Building ${IMAGE_NAME}"; then
             fail "unnecessary rebuild on second run" "saw 'Building' message"
@@ -337,7 +337,7 @@ if $RUN_UNIT; then
     fi
 
     # check dry-run keeps --rm (ephemeral, no commit)
-    check_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" check --dry-run --no-rebuild 2>&1 || true)
+    check_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" __check --dry-run --no-rebuild 2>&1 || true)
     if echo "$check_dry" | grep -q -- '--rm'; then
         pass "check --dry-run keeps --rm"
     else
