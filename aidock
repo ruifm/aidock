@@ -310,21 +310,19 @@ Agent args:
   Example: ${0##*/} -a claude -- --verbose
 
 Configuration:
-  Agent config+state: \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/<agent>/
-  Build files:        \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/Containerfile
-                      All seeded from defaults on first run. Edit to customize.
-  Default agent:      \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/default-agent
-  Container args:     \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/container.conf
-  aidock settings:    \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/aidock.conf
+  \${XDG_CONFIG_HOME:-~/.config}/${PROJECT_NAME}/aidock.conf  (optional; bash-sourced)
+    default_agent          # default agent if -a omitted (default: prompt)
+    commit_on_exit         # always | prompt | never (default: always)
+    extra_container_args   # bash array of extra engine run args
 
 Examples:
-  ${0##*/}                           # Run default agent (copilot)
+  ${0##*/}                           # Run default agent (or pick one)
   ${0##*/} -a claude                 # Run Claude Code
   ${0##*/} shell                     # Debug shell
   ${0##*/} info                      # Show diagnostic info
   ${0##*/} purge -a claude --force  # Delete all claude config + session data
   ${0##*/} drop-session              # Reset this CWD's session image to base
-  ${0##*/} --no-cache                 # Force a no-cache base image rebuild
+  ${0##*/} --no-cache                # Force a no-cache base image rebuild
   ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
   ${0##*/} -- --help                 # Show agent's own help
 EOF
