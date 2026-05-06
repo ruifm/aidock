@@ -550,7 +550,7 @@ if $RUN_UNIT; then
         fail "autopicked agent is used for the run" "got: $one_output"
     fi
 
-    # 2+ configured, no TTY: dies with hint pointing at -a / default-agent.
+    # 2+ configured, no TTY: dies with hint pointing at -a / aidock.conf.
     multi_no_tty=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild </dev/null 2>&1 || true)
     if echo "$multi_no_tty" | grep -q "multiple agents configured" &&
         echo "$multi_no_tty" | grep -q "no TTY"; then

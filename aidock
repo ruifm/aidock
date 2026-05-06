@@ -35,7 +35,7 @@ cmd_init_home() {
 
 cmd_checkhealth() {
     # Verify the container environment is correctly configured.
-    # Run via: aidock check
+    # Invoked by Containerfile HEALTHCHECK and by the hidden `__check` smoke test.
     set -uo pipefail
     : "${AGENT:?}" "${AGENT_CONFIG_DIR:?}" "${PROJECT_NAME:?}"
 
@@ -373,7 +373,7 @@ engine_image_size() {
 # The agents volume holds the npm-installed agent CLIs (copilot/claude/
 # codex) and is mounted at /opt/aidock/agents on every container run.
 # It is populated at build time (cmd_build → _seed_agents_volume) and
-# refreshed by `update-agents` so updates propagate instantly to all
+# refreshed by `aidock update` so updates propagate instantly to all
 # CWDs/sessions without any per-session rebuild.
 
 engine_volume_exists() {
@@ -397,7 +397,7 @@ engine_volume_size() {
 
 # engine_run execs into the container — this function does not return.
 # In dry-run mode, prints the command instead of executing.
-# Used for ephemeral commands (check) that must not commit.
+# Used for ephemeral commands (__check) that must not commit.
 engine_run() {
     local userns_flag=()
     if [[ "$ENGINE" == "podman" ]]; then
@@ -479,7 +479,7 @@ _acquire_session_lock() {
 }
 
 # Acquire an exclusive flock on ${SESSION_DIR}/agents-volume.lock so
-# concurrent seeds / update-agents on different CWDs don't race against
+# concurrent seeds / updates on different CWDs don't race against
 # the shared agents volume. Uses fd 8 to avoid clashing with the per-CWD
 # session lock on fd 9.
 _acquire_agents_volume_lock() {
@@ -491,7 +491,7 @@ _acquire_agents_volume_lock() {
     exec 8>"$lockfile"
     if ! flock -n 8; then
         {
-            echo "error: another aidock build/update-agents is touching the shared agents volume"
+            echo "error: another aidock build/update is touching the shared agents volume"
             echo "  lock: ${lockfile}"
             echo "  wait for it to finish and try again"
         } >&2
@@ -499,7 +499,7 @@ _acquire_agents_volume_lock() {
     fi
 }
 
-# Map an agent name to its npm package (matches update-agents's table).
+# Map an agent name to its npm package (matches `aidock update`'s table).
 _agent_npm_pkg() {
     case "$1" in
         copilot) echo "@github/copilot" ;;
@@ -697,7 +697,7 @@ RUN npm install -g prettier && npm cache clean --force
 # ── Shared agents volume mount point ─────────────────────────────────
 # AI agent CLIs (copilot/claude/codex) are NOT baked into the base image.
 # They are installed into a shared named volume mounted at /opt/aidock/agents
-# at build time, so `update-agents` is global and instant across all sessions.
+# at build time, so `aidock update` is global and instant across all sessions.
 # /opt/aidock/agents/bin is first in PATH; volume binaries shadow image-level
 # fallbacks. mode 0777 lets both Podman (root in container) and Docker
 # (--user uid:gid) write into the volume.
