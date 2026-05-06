@@ -623,17 +623,17 @@ if $RUN_UNIT; then
 
     section "commit_on_exit policy"
 
-    if [[ -f "${CONFIG_DIR}/aidock.conf" ]]; then
-        pass "aidock.conf seeded to config dir"
-    else
-        fail "aidock.conf seeded to config dir" "not found at ${CONFIG_DIR}/aidock.conf"
-    fi
-
     info_default=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
     if echo "$info_default" | grep -q "Commit policy: always"; then
-        pass "default commit policy is 'always'"
+        pass "default commit policy is 'always' when no aidock.conf"
     else
-        fail "default commit policy is 'always'" "got: $info_default"
+        fail "default commit policy is 'always' when no aidock.conf" "got: $info_default"
+    fi
+
+    if [[ -f "${CONFIG_DIR}/aidock.conf" ]]; then
+        fail "aidock.conf not seeded automatically" "found at ${CONFIG_DIR}/aidock.conf"
+    else
+        pass "aidock.conf not seeded automatically"
     fi
 
     # CLI override (--commit=prompt) wins over conf
@@ -646,8 +646,7 @@ if $RUN_UNIT; then
         fail "--commit=prompt accepted on 'run' subcommand" "got: $info_override"
     fi
 
-    # Conf-file override
-    saved_conf=$(cat "${CONFIG_DIR}/aidock.conf")
+    # User-created conf overrides default
     echo "commit_on_exit=never" >"${CONFIG_DIR}/aidock.conf"
     info_never=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
     if echo "$info_never" | grep -q "Commit policy: never"; then
@@ -681,8 +680,8 @@ if $RUN_UNIT; then
         fail "--commit rejected on non-run/shell subcommands" "got: $bad_subcmd"
     fi
 
-    # Restore conf
-    echo "$saved_conf" >"${CONFIG_DIR}/aidock.conf"
+    # Cleanup user-created conf
+    rm -f "${CONFIG_DIR}/aidock.conf"
 
     # ── list-sessions ────────────────────────────────────────────────────
 
@@ -949,41 +948,43 @@ EOF
         fail "no first-run message when image is built" "got: $second_run_output"
     fi
 
-    # ── Containerfile seeding ────────────────────────────────────────────
+    # ── Containerfile is inline (not seeded) ─────────────────────────────
 
-    section "Containerfile seeding"
+    section "Containerfile inline (no disk seed)"
 
-    # Containerfile should be seeded to CONFIG_DIR on run
     if [[ -f "${CONFIG_DIR}/Containerfile" ]]; then
-        pass "Containerfile seeded to config dir"
+        fail "Containerfile not seeded to disk" "found at ${CONFIG_DIR}/Containerfile"
     else
-        fail "Containerfile seeded to config dir" "not found at ${CONFIG_DIR}/Containerfile"
+        pass "Containerfile not seeded to disk"
     fi
 
-    # The launcher itself should be copied into BUILD_DIR (entrypoint host)
+    # The launcher itself should be copied into BUILD_DIR (build context for COPY)
     if [[ -f "${CONFIG_DIR}/aidock" ]] && [[ -x "${CONFIG_DIR}/aidock" ]]; then
         pass "launcher copied into build dir"
     else
         fail "launcher copied into build dir" "aidock missing or not executable in ${CONFIG_DIR}"
     fi
 
-    # User edits to Containerfile should be preserved on re-run
-    echo "# user customization" >>"${CONFIG_DIR}/Containerfile"
-    timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild >/dev/null 2>&1
-    if grep -q "# user customization" "${CONFIG_DIR}/Containerfile"; then
-        pass "user edits to Containerfile preserved"
+    # --emit-default Containerfile prints inline heredoc, does not write
+    rm -f "${CONFIG_DIR}/Containerfile"
+    cf_first_line=$("${LAUNCHER}" --emit-default Containerfile 2>/dev/null | head -1)
+    if [[ "$cf_first_line" == "# aidock"* ]]; then
+        pass "--emit-default Containerfile prints inline heredoc"
     else
-        fail "user edits to Containerfile preserved" "customization line missing after re-run"
+        fail "--emit-default Containerfile prints inline heredoc" "first line: $cf_first_line"
     fi
-    # Clean up the edit
-    sed -i '/# user customization/d' "${CONFIG_DIR}/Containerfile"
-
-    # --info should show Containerfile path
-    info_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
-    if echo "$info_output" | grep -q "Containerfile:"; then
-        pass "info shows Containerfile path"
+    if [[ ! -f "${CONFIG_DIR}/Containerfile" ]]; then
+        pass "--emit-default Containerfile does not write to disk"
     else
-        fail "info shows Containerfile path" "got: $info_output"
+        fail "--emit-default Containerfile does not write to disk" "file appeared at ${CONFIG_DIR}/Containerfile"
+    fi
+
+    # info should mention the inline Containerfile
+    info_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" info 2>&1)
+    if echo "$info_output" | grep -q "Containerfile: inline"; then
+        pass "info reports inline Containerfile"
+    else
+        fail "info reports inline Containerfile" "got: $info_output"
     fi
 
     section "Installed artifact (standalone launcher smoke test)"
@@ -994,12 +995,12 @@ EOF
     cp "${LAUNCHER}" "${smoke_dir}/aidock"
     chmod +x "${smoke_dir}/aidock"
 
-    # Seeding works from inlined heredoc defaults
-    smoke_dry=$(XDG_CONFIG_HOME="$smoke_cfg" GH_TOKEN=fake timeout "${TIMEOUT}" "${smoke_dir}/aidock" --dry-run 2>&1 || true)
-    if [[ -f "${smoke_cfg}/aidock/Containerfile" ]]; then
-        pass "standalone launcher seeds Containerfile from inlined heredocs"
+    # Standalone run does not seed a Containerfile to disk
+    XDG_CONFIG_HOME="$smoke_cfg" GH_TOKEN=fake timeout "${TIMEOUT}" "${smoke_dir}/aidock" --dry-run >/dev/null 2>&1 || true
+    if [[ ! -f "${smoke_cfg}/aidock/Containerfile" ]]; then
+        pass "standalone launcher does not seed Containerfile to disk"
     else
-        fail "standalone launcher seeds Containerfile from inlined heredocs" "file not found after dry-run"
+        fail "standalone launcher does not seed Containerfile to disk" "file appeared at ${smoke_cfg}/aidock/Containerfile"
     fi
 
     rm -rf "$smoke_dir" "$smoke_cfg"

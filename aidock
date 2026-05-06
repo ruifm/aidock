@@ -733,23 +733,9 @@ ENTRYPOINT ["aidock", "__init-home"]
 __AIDOCK_CONTAINERFILE__
 }
 
-seed_default_file() {
-    local name="$1" force="${2:-no}"
-    local target="${BUILD_DIR}/${name}"
-    if [[ "$force" != "force" && -f "$target" ]]; then
-        return 0
-    fi
-    case "$name" in
-        Containerfile) emit_containerfile >"$target" ;;
-        *)
-            echo "error: unknown default file: $name" >&2
-            return 1
-            ;;
-    esac
-}
-
 # Hidden debug flag: print one of the inlined default files and exit.
 # Used by `just lint` to pipe the Containerfile through hadolint.
+# Inspection-only — does NOT write anywhere.
 if [[ "${1:-}" == "--emit-default" ]]; then
     case "${2:-}" in
         Containerfile) emit_containerfile ;;
@@ -761,43 +747,28 @@ if [[ "${1:-}" == "--emit-default" ]]; then
     exit 0
 fi
 
-# ── Seed build assets to CONFIG_DIR ──────────────────────────────────
-# Defaults are emitted from inline heredocs above. cp-style "don't clobber"
-# behavior is built into seed_default_file: existing user edits are preserved.
+# ── Stage build assets ───────────────────────────────────────────────
+# The Containerfile is piped to the build engine via stdin (no disk copy).
+# The aidock launcher itself is copied into BUILD_DIR because the
+# Containerfile's `COPY aidock …` requires it to exist in the build context.
 
 BUILD_DIR="${CONFIG_DIR}"
 mkdir -p "${BUILD_DIR}"
 
-seed_default_file Containerfile
-
-# Sweep stale heredoc-era support files (no-op for fresh installs).
-rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh"
+# Sweep stale support files left behind by older versions of aidock.
+rm -f "${BUILD_DIR}/init-home.sh" "${BUILD_DIR}/checkhealth.sh" \
+    "${BUILD_DIR}/Containerfile" "${BUILD_DIR}/.last-build"
 
 # The launcher itself is COPYed into the image as the entrypoint host. Only
-# refresh the staged copy when the source bytes actually changed; otherwise
-# touching the file would invalidate the rebuild-detection mtime check.
+# refresh the staged copy when the source bytes actually changed.
 if ! cmp -s "$0" "${BUILD_DIR}/aidock" 2>/dev/null; then
     cp "$0" "${BUILD_DIR}/aidock"
     chmod +x "${BUILD_DIR}/aidock"
 fi
 
-# ── Seed aidock.conf with built-in defaults ─────────────────────────
-# Plain KEY=VALUE, sourced as bash. CLI flags override these.
+# ── aidock.conf (optional) ───────────────────────────────────────────
+# Plain bash; sourced if present. Built-in defaults below; CLI flags win.
 AIDOCK_CONF="${CONFIG_DIR}/aidock.conf"
-if [[ ! -f "$AIDOCK_CONF" ]]; then
-    cat >"$AIDOCK_CONF" <<'AIDOCKCONF'
-# aidock configuration. Plain KEY=VALUE; comments allowed.
-# CLI flags (e.g. --commit) override values here.
-
-# Behavior on container exit when the container's filesystem changed:
-#   always  Commit the change to the per-CWD session image. (default)
-#   prompt  Ask interactively (10s default-yes timeout).
-#   never   Discard the change.
-commit_on_exit=always
-AIDOCKCONF
-fi
-
-# Source it (KEY=VALUE only). Set defaults first so a missing key is fine.
 commit_on_exit="always"
 # shellcheck disable=SC1090
 [[ -f "$AIDOCK_CONF" ]] && source "$AIDOCK_CONF"
@@ -1351,7 +1322,7 @@ if [[ "$RUN_MODE" == "update" ]]; then
     if [[ "$DRY_RUN" == "true" ]]; then
         if ! engine_image_exists "${BASE_IMAGE_NAME}"; then
             echo "[dry-run] No base image present; would build first."
-            echo "[dry-run] Would run: $ENGINE build --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
+            echo "[dry-run] Would run: $ENGINE build --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f - ${BUILD_DIR} (Containerfile from stdin)"
         fi
         echo "[dry-run] configured agents: ${update_agents_list[*]}"
         echo "[dry-run] Would update ${AGENTS_VOLUME}: npm install -g ${update_pkgs[*]}"
@@ -1361,9 +1332,8 @@ if [[ "$RUN_MODE" == "update" ]]; then
     if ! engine_image_exists "${BASE_IMAGE_NAME}"; then
         echo "[info] no base image yet; building first..."
         echo "Building ${BASE_IMAGE_NAME} image..."
-        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-            -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
-        touch "${BUILD_DIR}/.last-build"
+        emit_containerfile | engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+            -t "${BASE_IMAGE_NAME}" -f - "${BUILD_DIR}"
         # The build's seed step (below) will install the same agents we
         # were about to update, so we're done after one round.
         _seed_agents_volume
@@ -1458,19 +1428,6 @@ elif [[ "$BUILD_OVERRIDE" == "skip" ]]; then
     needs_build=false
 elif ! engine_image_exists "${BASE_IMAGE_NAME}"; then
     needs_build=true
-else
-    last_build_marker="${BUILD_DIR}/.last-build"
-    if [[ -f "$last_build_marker" ]]; then
-        build_epoch=$(stat -c %Y "$last_build_marker")
-    else
-        build_epoch=0
-    fi
-    for src in "${BUILD_DIR}/Containerfile" "${BUILD_DIR}/aidock"; do
-        if [[ -f "$src" ]] && (($(stat -c %Y "$src") > build_epoch)); then
-            needs_build=true
-            break
-        fi
-    done
 fi
 
 FIRST_RUN=false
@@ -1481,9 +1438,8 @@ if [[ "${needs_build}" == "true" ]]; then
         build_flags+=(--no-cache)
     fi
     echo "Building ${BASE_IMAGE_NAME} image..."
-    engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-        -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
-    touch "${BUILD_DIR}/.last-build"
+    emit_containerfile | engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+        -t "${BASE_IMAGE_NAME}" -f - "${BUILD_DIR}"
     _seed_agents_volume
     FIRST_RUN=true
 fi
@@ -1497,7 +1453,7 @@ else
 fi
 
 if [[ "$FIRST_RUN" == "true" && "$RUN_MODE" == "run" ]]; then
-    echo "First run. Containerfile: ${BUILD_DIR}/Containerfile"
+    echo "First run. Use 'aidock --emit-default Containerfile' to inspect the base image recipe."
 fi
 
 # ── Assemble mounts ─────────────────────────────────────────────────
@@ -1666,7 +1622,7 @@ if [[ "${RUN_MODE}" == "info" ]]; then
         echo "Default agent: copilot (built-in default)"
     fi
     echo "Config dir:    ${CONFIG_DIR}/"
-    echo "Containerfile: ${BUILD_DIR}/Containerfile"
+    echo "Containerfile: inline (use 'aidock --emit-default Containerfile' to inspect)"
 
     # Show agent versions via a quick container run (if image exists)
     if engine_image_exists "${ACTIVE_IMAGE}"; then
