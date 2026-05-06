@@ -120,12 +120,12 @@ run_launcher_check() {
 if $RUN_INTEGRATION; then
     if [[ "$ENGINE" == "podman" ]]; then
         if ! "$ENGINE" image exists "${IMAGE_NAME}" 2>/dev/null; then
-            echo "error: image ${IMAGE_NAME} not found, run 'just build' first" >&2
+            echo "error: image ${IMAGE_NAME} not found, run 'just update' first" >&2
             exit 1
         fi
     else
         if ! "$ENGINE" image inspect "${IMAGE_NAME}" &>/dev/null; then
-            echo "error: image ${IMAGE_NAME} not found, run 'just build' first" >&2
+            echo "error: image ${IMAGE_NAME} not found, run 'just update' first" >&2
             exit 1
         fi
     fi
@@ -302,7 +302,7 @@ if $RUN_UNIT; then
 
     # --dry-run prints command without executing
     dry_output=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild --agent copilot 2>&1)
-    if echo "$dry_output" | grep -q "$ENGINE.*run.*${IMAGE_NAME}"; then
+    if echo "$dry_output" | grep -qE "$ENGINE.*run.*(${IMAGE_NAME}|${PROJECT_NAME}-session-)"; then
         pass "run --dry-run prints container command"
     else
         fail "run --dry-run prints container command" "got: $dry_output"

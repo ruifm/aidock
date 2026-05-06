@@ -4,15 +4,7 @@
 export PROJECT_NAME := "aidock"
 launcher := "./" + PROJECT_NAME
 
-# Build the container image
-build:
-    {{launcher}} build
-
-# Force rebuild (no cache)
-rebuild:
-    {{launcher}} build --no-cache
-
-# Rebuild with latest base image and packages
+# Build/refresh the base image and shared agents volume
 update:
     {{launcher}} update
 
@@ -20,8 +12,8 @@ update:
 run *args:
     {{launcher}} {{args}}
 
-# Run container healthcheck + integration tests
-test: build
+# Run container healthcheck + integration tests (requires base image; run `just update` first)
+test:
     ./tests/integration.sh
 
 # Run unit tests only (no container image needed)
