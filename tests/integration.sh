@@ -393,14 +393,6 @@ if $RUN_UNIT; then
 
     section "Update / Clean modes"
 
-    # --update --dry-run shows pull + no-cache
-    update_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1)
-    if echo "$update_dry" | grep -q "\-\-pull" && echo "$update_dry" | grep -q "\-\-no-cache"; then
-        pass "update --dry-run shows pull + no-cache"
-    else
-        fail "update --dry-run shows pull + no-cache" "got: $update_dry"
-    fi
-
     # --clean --dry-run shows what would be cleaned
     clean_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" clean --dry-run 2>&1)
     if echo "$clean_dry" | grep -q "\[dry-run\].*rmi"; then
@@ -790,9 +782,9 @@ if $RUN_UNIT; then
         fail "drop-session dry-run shows actions" "got: $rs_dry"
     fi
 
-    # ── update-agents ────────────────────────────────────────────────────
+    # ── update ───────────────────────────────────────────────────────────
 
-    section "update-agents"
+    section "update"
 
     # No image present → dry-run reports the build-first hint.
     # Use a fake engine that always reports no image so this works even when
@@ -805,11 +797,11 @@ exit 1
 EOF
     chmod +x "${fake_no_image}/engine"
     ua_no_image=$(CONTAINER_ENGINE="${fake_no_image}/engine" PATH="${fake_no_image}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$ua_no_image" | grep -q "would build first" && echo "$ua_no_image" | grep -q "Would run: .* build .*${PROJECT_NAME}-base"; then
-        pass "update-agents dry-run reports build-first when no image"
+        pass "update dry-run reports build-first when no image"
     else
-        fail "update-agents dry-run reports build-first when no image" "got: $ua_no_image"
+        fail "update dry-run reports build-first when no image" "got: $ua_no_image"
     fi
     rm -rf "$fake_no_image"
 
@@ -825,37 +817,37 @@ exit 1
 EOF
     chmod +x "${fake_base}/engine"
     ua_dry=$(CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$ua_dry" | grep -q "configured agents: copilot claude codex" &&
         echo "$ua_dry" | grep -q "Would update ${PROJECT_NAME}-agents: npm install -g @github/copilot @anthropic-ai/claude-code @openai/codex"; then
-        pass "update-agents dry-run plan against shared volume"
+        pass "update dry-run plan against shared volume"
     else
-        fail "update-agents dry-run plan against shared volume" "got: $ua_dry"
+        fail "update dry-run plan against shared volume" "got: $ua_dry"
     fi
 
     # Filter: only configured agents are reinstalled.
     ua_filtered=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$ua_filtered" | grep -q "configured agents: copilot$" &&
         echo "$ua_filtered" | grep -q "Would update ${PROJECT_NAME}-agents: npm install -g @github/copilot$" &&
         ! echo "$ua_filtered" | grep -q "@anthropic-ai/claude-code" &&
         ! echo "$ua_filtered" | grep -q "@openai/codex"; then
-        pass "update-agents reinstalls only configured agents"
+        pass "update reinstalls only configured agents"
     else
-        fail "update-agents reinstalls only configured agents" "got: $ua_filtered"
+        fail "update reinstalls only configured agents" "got: $ua_filtered"
     fi
 
     # No agents configured → dies with all hints.
     ua_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update-agents --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$ua_zero" | grep -q "no agent is configured"; then
-        pass "update-agents dies when no agents configured"
+        pass "update dies when no agents configured"
     else
-        fail "update-agents dies when no agents configured" "got: $ua_zero"
+        fail "update dies when no agents configured" "got: $ua_zero"
     fi
 
     rm -rf "$fake_base"
@@ -884,47 +876,6 @@ EOF
     else
         pass "Containerfile no longer pre-installs agent CLIs"
     fi
-
-    # build dry-run mentions the seed step (and includes the volume name).
-    fake_seed_dry="${CONFIG_DIR}/.fake-seed-${RANDOM}"
-    mkdir -p "$fake_seed_dry"
-    cat >"${fake_seed_dry}/engine" <<'EOF'
-#!/usr/bin/env bash
-exit 0
-EOF
-    chmod +x "${fake_seed_dry}/engine"
-    build_dry=$(CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
-    if echo "$build_dry" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot"; then
-        pass "update --dry-run announces agents-volume seed step"
-    else
-        fail "update --dry-run announces agents-volume seed step" "got: $build_dry"
-    fi
-
-    # When zero agents are configured, build dry-run skips the seed.
-    build_dry_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
-        HOME="${TEST_TMPDIR}" \
-        CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
-    if echo "$build_dry_zero" | grep -q "would skip agents-volume seed (no configured agents)"; then
-        pass "update --dry-run skips seed when no agents configured"
-    else
-        fail "update --dry-run skips seed when no agents configured" "got: $build_dry_zero"
-    fi
-
-    # Seed filter: only configured agents are seeded.
-    build_dry_filter=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
-        HOME="${TEST_TMPDIR}" \
-        CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
-    if echo "$build_dry_filter" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot$" &&
-        ! echo "$build_dry_filter" | grep -q "@anthropic-ai/claude-code" &&
-        ! echo "$build_dry_filter" | grep -q "@openai/codex"; then
-        pass "update seed step filters to configured agents"
-    else
-        fail "update seed step filters to configured agents" "got: $build_dry_filter"
-    fi
-    rm -rf "$fake_seed_dry"
 
     # ── Host config bind-mount allowlist ─────────────────────────────────
 

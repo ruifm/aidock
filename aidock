@@ -281,8 +281,7 @@ Launch an AI coding agent inside a container.
 
 Commands:
   run            Launch agent in container (default if omitted)
-  update         Pull latest base image and rebuild everything
-  update-agents  Reinstall AI agents in the shared agents volume (global)
+  update         Update AI agents in the shared agents volume (global)
   clean          Remove image, config, and dangling layers
   shell          Open a debug shell in container
   info           Show engine, image, and agent info
@@ -904,7 +903,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run update update-agents clean shell info drop-session purge list-sessions prune"
+readonly AVAILABLE_COMMANDS="run update clean shell info drop-session purge list-sessions prune"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -1324,71 +1323,12 @@ if [[ "$RUN_MODE" == "prune" ]]; then
     exit 0
 fi
 
-# ── Handle build (early exit) ──────────────────────────────────────
-
 # ── Handle update (early exit) ─────────────────────────────────────
+# Refreshes the AI agent CLIs in the shared agents volume. Global across
+# all per-CWD sessions: every aidock run mounts the same volume. Does NOT
+# rebuild the base image (use clean + next run for that).
 
 if [[ "$RUN_MODE" == "update" ]]; then
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE build --pull --no-cache --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
-        echo "[dry-run] Would run: $ENGINE image prune -f"
-        _seed_agents_volume
-    else
-        echo "Updating ${BASE_IMAGE_NAME} image (pull + no-cache rebuild)..."
-        engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-            --pull --no-cache -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
-        touch "${BUILD_DIR}/.last-build"
-        "$ENGINE" image prune -f
-        _seed_agents_volume
-        echo "Done."
-    fi
-    exit 0
-fi
-
-# ── Handle clean (early exit) ──────────────────────────────────────
-
-if [[ "$RUN_MODE" == "clean" ]]; then
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE rmi ${BASE_IMAGE_NAME}"
-        echo "[dry-run] Would run: $ENGINE rmi <all ${PROJECT_NAME}-session-* images>"
-        echo "[dry-run] Would run: $ENGINE volume rm ${AGENTS_VOLUME}"
-        [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
-        [[ -d "${SESSION_DIR}" ]] && echo "[dry-run] Would remove: ${SESSION_DIR}"
-        echo "[dry-run] Would run: $ENGINE image prune -f"
-    else
-        echo "Cleaning ${PROJECT_NAME}..."
-        "$ENGINE" rmi "${BASE_IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${BASE_IMAGE_NAME}" || echo "  Image ${BASE_IMAGE_NAME} not found (skipped)"
-        # Remove any session images for this project
-        session_images=$("$ENGINE" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "^${PROJECT_NAME}-session-[0-9a-f]+:" || true)
-        if [[ -n "$session_images" ]]; then
-            while IFS= read -r img; do
-                "$ENGINE" rmi "$img" >/dev/null 2>&1 && echo "  Removed image ${img}"
-            done <<<"$session_images"
-        fi
-        if engine_volume_exists "${AGENTS_VOLUME}"; then
-            "$ENGINE" volume rm "${AGENTS_VOLUME}" >/dev/null 2>&1 &&
-                echo "  Removed agents volume ${AGENTS_VOLUME}" ||
-                echo "  Could not remove agents volume ${AGENTS_VOLUME} (may be in use)"
-        fi
-        if [[ -d "${CONFIG_DIR}" ]]; then
-            rm -rf "${CONFIG_DIR}"
-            echo "  Removed config dir ${CONFIG_DIR}"
-        fi
-        if [[ -d "${SESSION_DIR}" ]]; then
-            rm -rf "${SESSION_DIR}"
-            echo "  Removed session dir ${SESSION_DIR}"
-        fi
-        "$ENGINE" image prune -f >/dev/null 2>&1
-        echo "Done."
-    fi
-    exit 0
-fi
-
-# ── Handle update-agents (early exit) ──────────────────────────────
-# Refreshes the AI agent CLIs in the shared agents volume. Global across
-# all per-CWD sessions: every aidock run mounts the same volume.
-
-if [[ "$RUN_MODE" == "update-agents" ]]; then
     update_pkgs=()
     update_agents_list=()
     while IFS= read -r _agent; do
@@ -1433,6 +1373,45 @@ if [[ "$RUN_MODE" == "update-agents" ]]; then
 
     _seed_agents_volume "Updating"
     echo "Done."
+    exit 0
+fi
+
+# ── Handle clean (early exit) ──────────────────────────────────────
+
+if [[ "$RUN_MODE" == "clean" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo "[dry-run] Would run: $ENGINE rmi ${BASE_IMAGE_NAME}"
+        echo "[dry-run] Would run: $ENGINE rmi <all ${PROJECT_NAME}-session-* images>"
+        echo "[dry-run] Would run: $ENGINE volume rm ${AGENTS_VOLUME}"
+        [[ -d "${CONFIG_DIR}" ]] && echo "[dry-run] Would remove: ${CONFIG_DIR}"
+        [[ -d "${SESSION_DIR}" ]] && echo "[dry-run] Would remove: ${SESSION_DIR}"
+        echo "[dry-run] Would run: $ENGINE image prune -f"
+    else
+        echo "Cleaning ${PROJECT_NAME}..."
+        "$ENGINE" rmi "${BASE_IMAGE_NAME}" 2>/dev/null && echo "  Removed image ${BASE_IMAGE_NAME}" || echo "  Image ${BASE_IMAGE_NAME} not found (skipped)"
+        # Remove any session images for this project
+        session_images=$("$ENGINE" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E "^${PROJECT_NAME}-session-[0-9a-f]+:" || true)
+        if [[ -n "$session_images" ]]; then
+            while IFS= read -r img; do
+                "$ENGINE" rmi "$img" >/dev/null 2>&1 && echo "  Removed image ${img}"
+            done <<<"$session_images"
+        fi
+        if engine_volume_exists "${AGENTS_VOLUME}"; then
+            "$ENGINE" volume rm "${AGENTS_VOLUME}" >/dev/null 2>&1 &&
+                echo "  Removed agents volume ${AGENTS_VOLUME}" ||
+                echo "  Could not remove agents volume ${AGENTS_VOLUME} (may be in use)"
+        fi
+        if [[ -d "${CONFIG_DIR}" ]]; then
+            rm -rf "${CONFIG_DIR}"
+            echo "  Removed config dir ${CONFIG_DIR}"
+        fi
+        if [[ -d "${SESSION_DIR}" ]]; then
+            rm -rf "${SESSION_DIR}"
+            echo "  Removed session dir ${SESSION_DIR}"
+        fi
+        "$ENGINE" image prune -f >/dev/null 2>&1
+        echo "Done."
+    fi
     exit 0
 fi
 
