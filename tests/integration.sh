@@ -362,12 +362,12 @@ if $RUN_UNIT; then
         fail "unknown option rejected" "expected error, got: $excl_output"
     fi
 
-    # --no-cache only valid with build command
-    build_excl=$(timeout "${TIMEOUT}" "${LAUNCHER}" run --no-cache 2>&1 || true)
-    if echo "$build_excl" | grep -q "only valid with"; then
-        pass "--no-cache rejected outside build"
+    # --no-cache is now a general flag (no longer rejected outside any specific subcommand)
+    nc_general=$(timeout "${TIMEOUT}" "${LAUNCHER}" --no-cache info 2>&1 || true)
+    if ! echo "$nc_general" | grep -q "only valid with"; then
+        pass "--no-cache accepted as general flag"
     else
-        fail "--no-cache rejected outside build" "expected error, got: $build_excl"
+        fail "--no-cache accepted as general flag" "got: $nc_general"
     fi
 
     # purge -a --force deletes agent dir entirely
@@ -381,7 +381,7 @@ if $RUN_UNIT; then
     fi
 
     # --force rejected outside purge
-    _purge_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --force 2>&1)
+    _purge_out=$(timeout "${TIMEOUT}" "${LAUNCHER}" info --force 2>&1)
     _purge_rc=$?
     if echo "$_purge_out" | grep -q "error.*--force"; then
         pass "--force rejected outside purge"
@@ -389,25 +389,9 @@ if $RUN_UNIT; then
         fail "--force rejected outside purge" "rc=$_purge_rc out=[$_purge_out]"
     fi
 
-    # ── Build / Update / Clean modes ─────────────────────────────────────
+    # ── Update / Clean modes ─────────────────────────────────────────────
 
-    section "Build / Update / Clean modes"
-
-    # --build --dry-run shows the build command without executing
-    build_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1)
-    if echo "$build_dry" | grep -q "\[dry-run\].*build.*PROJECT_NAME"; then
-        pass "build --dry-run shows build command"
-    else
-        fail "build --dry-run shows build command" "got: $build_dry"
-    fi
-
-    # build --no-cache --dry-run includes --no-cache
-    build_rebuild_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --no-cache --dry-run 2>&1)
-    if echo "$build_rebuild_dry" | grep -q "\-\-no-cache"; then
-        pass "build --no-cache adds --no-cache flag"
-    else
-        fail "build --no-cache adds --no-cache flag" "got: $build_rebuild_dry"
-    fi
+    section "Update / Clean modes"
 
     # --update --dry-run shows pull + no-cache
     update_dry=$(timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1)
@@ -698,7 +682,7 @@ if $RUN_UNIT; then
     fi
 
     # --commit not allowed on other subcommands
-    bad_subcmd=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --commit=always 2>&1 || true)
+    bad_subcmd=$(timeout "${TIMEOUT}" "${LAUNCHER}" info --commit=always 2>&1 || true)
     if echo "$bad_subcmd" | grep -q "only valid with"; then
         pass "--commit rejected on non-run/shell subcommands"
     else
@@ -776,7 +760,7 @@ if $RUN_UNIT; then
     fi
 
     # --orphans rejected outside prune
-    o_outside=$(timeout "${TIMEOUT}" "${LAUNCHER}" build --orphans 2>&1 || true)
+    o_outside=$(timeout "${TIMEOUT}" "${LAUNCHER}" info --orphans 2>&1 || true)
     if echo "$o_outside" | grep -qi "only valid with the 'prune'"; then
         pass "--orphans rejected outside prune"
     else
@@ -910,35 +894,35 @@ exit 0
 EOF
     chmod +x "${fake_seed_dry}/engine"
     build_dry=$(CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$build_dry" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot"; then
-        pass "build --dry-run announces agents-volume seed step"
+        pass "update --dry-run announces agents-volume seed step"
     else
-        fail "build --dry-run announces agents-volume seed step" "got: $build_dry"
+        fail "update --dry-run announces agents-volume seed step" "got: $build_dry"
     fi
 
     # When zero agents are configured, build dry-run skips the seed.
     build_dry_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$build_dry_zero" | grep -q "would skip agents-volume seed (no configured agents)"; then
-        pass "build --dry-run skips seed when no agents configured"
+        pass "update --dry-run skips seed when no agents configured"
     else
-        fail "build --dry-run skips seed when no agents configured" "got: $build_dry_zero"
+        fail "update --dry-run skips seed when no agents configured" "got: $build_dry_zero"
     fi
 
     # Seed filter: only configured agents are seeded.
     build_dry_filter=$(env -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         CONTAINER_ENGINE="${fake_seed_dry}/engine" PATH="${fake_seed_dry}:$PATH" \
-        timeout "${TIMEOUT}" "${LAUNCHER}" build --dry-run 2>&1 || true)
+        timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
     if echo "$build_dry_filter" | grep -q "Would seed ${PROJECT_NAME}-agents: npm install -g @github/copilot$" &&
         ! echo "$build_dry_filter" | grep -q "@anthropic-ai/claude-code" &&
         ! echo "$build_dry_filter" | grep -q "@openai/codex"; then
-        pass "build seed step filters to configured agents"
+        pass "update seed step filters to configured agents"
     else
-        fail "build seed step filters to configured agents" "got: $build_dry_filter"
+        fail "update seed step filters to configured agents" "got: $build_dry_filter"
     fi
     rm -rf "$fake_seed_dry"
 

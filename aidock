@@ -281,7 +281,6 @@ Launch an AI coding agent inside a container.
 
 Commands:
   run            Launch agent in container (default if omitted)
-  build          Build the container image
   update         Pull latest base image and rebuild everything
   update-agents  Reinstall AI agents in the shared agents volume (global)
   clean          Remove image, config, and dangling layers
@@ -297,11 +296,11 @@ Commands:
 Options:
   -a, --agent NAME   Agent to run (${AVAILABLE_AGENTS// /, }). Default: copilot
   -n, --dry-run      Print container command without executing
+  --no-cache         Force a no-cache base image rebuild on this invocation
   -h, --help         Show this help
   -v, --version      Show version
 
 Command-specific options:
-  build:         --no-cache    Force full rebuild (no layer cache)
   run:           --no-rebuild  Skip auto-rebuild check
                  --commit POLICY  Override commit_on_exit (always|prompt|never)
   shell:         --commit POLICY  Override commit_on_exit (always|prompt|never)
@@ -330,7 +329,7 @@ Examples:
   ${0##*/} purge -a claude --force  # Delete all claude config + session data
   ${0##*/} drop-session              # Reset this CWD's session image to base
   ${0##*/} reset-build                # Re-seed Containerfile from defaults
-  ${0##*/} build --no-cache          # Force full rebuild
+  ${0##*/} --no-cache                 # Force a no-cache base image rebuild
   ${0##*/} -a claude -- --verbose    # Pass --verbose to claude
   ${0##*/} -- --help                 # Show agent's own help
 EOF
@@ -909,7 +908,7 @@ list_configured_agents() {
 # ── Subcommand detection ─────────────────────────────────────────────
 # First arg (if not a flag) is treated as a subcommand.
 
-readonly AVAILABLE_COMMANDS="run build update update-agents clean shell check info reset-build drop-session purge list-sessions prune"
+readonly AVAILABLE_COMMANDS="run update update-agents clean shell check info reset-build drop-session purge list-sessions prune"
 
 if [[ $# -gt 0 && "$1" != -* ]]; then
     cmd="$1"
@@ -948,7 +947,6 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --no-cache)
-            [[ "$RUN_MODE" == "build" ]] || die "--no-cache is only valid with the 'build' command"
             BUILD_OVERRIDE="force"
             shift
             ;;
@@ -1356,25 +1354,6 @@ fi
 
 # ── Handle build (early exit) ──────────────────────────────────────
 
-if [[ "$RUN_MODE" == "build" ]]; then
-    build_flags=()
-    if [[ "$BUILD_OVERRIDE" == "force" ]]; then
-        build_flags+=(--no-cache)
-    fi
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[dry-run] Would run: $ENGINE build ${build_flags[*]} --build-arg PROJECT_NAME=${PROJECT_NAME} -t ${BASE_IMAGE_NAME} -f ${BUILD_DIR}/Containerfile ${BUILD_DIR}"
-        _seed_agents_volume
-    else
-        echo "Building ${BASE_IMAGE_NAME} image..."
-        engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
-            -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
-        touch "${BUILD_DIR}/.last-build"
-        _seed_agents_volume
-        echo "Done."
-    fi
-    exit 0
-fi
-
 # ── Handle update (early exit) ─────────────────────────────────────
 
 if [[ "$RUN_MODE" == "update" ]]; then
@@ -1546,8 +1525,13 @@ fi
 FIRST_RUN=false
 
 if [[ "${needs_build}" == "true" ]]; then
+    build_flags=()
+    if [[ "$BUILD_OVERRIDE" == "force" ]]; then
+        build_flags+=(--no-cache)
+    fi
     echo "Building ${BASE_IMAGE_NAME} image..."
-    engine_build --build-arg "PROJECT_NAME=${PROJECT_NAME}" -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
+    engine_build "${build_flags[@]}" --build-arg "PROJECT_NAME=${PROJECT_NAME}" \
+        -t "${BASE_IMAGE_NAME}" -f "${BUILD_DIR}/Containerfile" "${BUILD_DIR}"
     touch "${BUILD_DIR}/.last-build"
     _seed_agents_volume
     FIRST_RUN=true
