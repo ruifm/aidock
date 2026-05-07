@@ -141,10 +141,11 @@ cmd_checkhealth() {
     section "Authentication"
     case "$AGENT" in
         copilot)
-            if [[ -n "${GH_TOKEN:-}" ]]; then
-                pass "GH_TOKEN set (${GH_TOKEN:0:4}...${GH_TOKEN: -4})"
+            gh_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+            if [[ -n "$gh_token" ]]; then
+                pass "GH_TOKEN/GITHUB_TOKEN set (${gh_token:0:4}...${gh_token: -4})"
             else
-                fail "GH_TOKEN not set (copilot will not authenticate)"
+                fail "GH_TOKEN/GITHUB_TOKEN not set (copilot will not authenticate)"
             fi
             ;;
         claude)
@@ -770,7 +771,7 @@ validate_agent() {
 probe_agent_auth() {
     case "$1" in
         copilot)
-            [[ -n "${GH_TOKEN:-}" ]] && return 0
+            [[ -n "${GH_TOKEN:-${GITHUB_TOKEN:-}}" ]] && return 0
             [[ -f "${HOME}/.config/github-copilot/hosts.json" ]] && return 0
             command -v gh >/dev/null 2>&1 && gh auth token >/dev/null 2>&1 && return 0
             return 1
@@ -794,7 +795,7 @@ probe_agent_auth() {
 # One-liner setup hint shown when an agent is unconfigured.
 agent_setup_hint() {
     case "$1" in
-        copilot) echo "Run 'gh auth login' (then enable Copilot), or set GH_TOKEN." ;;
+        copilot) echo "Run 'gh auth login' (then enable Copilot), or set GH_TOKEN/GITHUB_TOKEN." ;;
         claude) echo "Set ANTHROPIC_API_KEY, or run 'claude /login' once on the host." ;;
         codex) echo "Set OPENAI_API_KEY, or run 'codex login' once on the host." ;;
         *) echo "Unknown agent: $1" ;;
@@ -1407,17 +1408,14 @@ fi
 
 case "$AGENT" in
     copilot)
-        if [[ -n "${GH_TOKEN:-}" ]]; then
-            env_vars+=(-e "GH_TOKEN=${GH_TOKEN}")
-        elif command -v gh &>/dev/null; then
+        gh_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+        if [[ -z "$gh_token" ]] && command -v gh &>/dev/null; then
             gh_token=$(gh auth token 2>/dev/null || true)
-            if [[ -n "$gh_token" ]]; then
-                env_vars+=(-e "GH_TOKEN=${gh_token}")
-            else
-                echo "warning: 'gh auth token' returned empty, auth may fail" >&2
-            fi
+        fi
+        if [[ -n "$gh_token" ]]; then
+            env_vars+=(-e "GH_TOKEN=${gh_token}")
         else
-            echo "warning: gh CLI not found, cannot pass auth token" >&2
+            echo "warning: no GH_TOKEN/GITHUB_TOKEN and 'gh auth token' returned empty; auth may fail" >&2
         fi
         ;;
     claude)

@@ -506,7 +506,7 @@ if $RUN_UNIT; then
     section "Agent picker"
 
     # Zero configured: run mode dies with all hints listed.
-    zero_output=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+    zero_output=$(env -u GH_TOKEN -u GITHUB_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         timeout "${TIMEOUT}" "${LAUNCHER}" run --dry-run --no-rebuild </dev/null 2>&1 || true)
     if echo "$zero_output" | grep -q "no agent is configured"; then
@@ -762,7 +762,7 @@ EOF
     fi
 
     # No agents configured → dies with all hints.
-    ua_zero=$(env -u GH_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
+    ua_zero=$(env -u GH_TOKEN -u GITHUB_TOKEN -u ANTHROPIC_API_KEY -u OPENAI_API_KEY \
         HOME="${TEST_TMPDIR}" \
         CONTAINER_ENGINE="${fake_base}/engine" PATH="${fake_base}:$PATH" \
         timeout "${TIMEOUT}" "${LAUNCHER}" update --dry-run 2>&1 || true)
