@@ -540,7 +540,14 @@ _seed_agents_volume() {
     _acquire_agents_volume_lock
 
     echo "${verb} ${AGENTS_VOLUME} with: ${pkgs[*]}"
-    "$ENGINE" run --rm \
+    local userns_flag=()
+    if [[ "$ENGINE" == "podman" ]]; then
+        # shellcheck disable=SC2054  # comma is part of podman flag syntax, not array separator
+        userns_flag=(--userns=keep-id:uid=0,gid=0)
+    else
+        userns_flag=(--user "$(id -u):$(id -g)")
+    fi
+    "$ENGINE" run --rm "${userns_flag[@]}" \
         -v "${AGENTS_VOLUME}:/opt/aidock/agents:z" \
         --entrypoint sh \
         "${BASE_IMAGE_NAME}" \
