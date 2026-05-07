@@ -12,8 +12,8 @@ update:
 run *args:
     {{launcher}} {{args}}
 
-# Run container healthcheck + integration tests (requires base image; run `just update` first)
-test:
+# Run container healthcheck + integration tests (auto-builds base image if missing)
+test: update
     ./tests/integration.sh
 
 # Run unit tests only (no container image needed)
